@@ -1,8 +1,12 @@
 'use strict';
 
 async function main() {
-  console.log('== HandEvaluator ==');
+  console.log('== BlindStructure ==');
+  require('./blindStructure.test').run();
+  console.log('\n== HandEvaluator ==');
   require('./handEvaluator.test').run();
+  console.log('\n== HandEvaluator 교차검증(Fuzz) ==');
+  require('./handEvaluatorFuzz.test').run();
   console.log('\n== GameEngine ==');
   require('./gameEngine.test').run();
   console.log('\n== TableManager ==');

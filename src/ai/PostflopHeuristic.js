@@ -1,6 +1,7 @@
 'use strict';
 
 const { estimateEquity } = require('./Equity');
+const { roundRaiseTo } = require('./util');
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -17,7 +18,8 @@ function sizeBet(engine, legal, fraction) {
     const raiseIncrement = Math.round(potAfterCall * fraction);
     raiseTo = engine.currentBet + Math.max(raiseIncrement, legal.minRaiseTo - engine.currentBet);
   }
-  return clamp(raiseTo, legal.minRaiseTo, legal.maxRaiseTo);
+  raiseTo = clamp(raiseTo, legal.minRaiseTo, legal.maxRaiseTo);
+  return roundRaiseTo(raiseTo, legal, 100); // 100원 단위로 보기 좋게 반올림
 }
 
 /**

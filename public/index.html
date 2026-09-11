@@ -37,25 +37,39 @@
 
     <div class="grid2">
       <label>시작 칩
-        <input id="create-startingStack" type="number" value="5000" min="100" step="100" />
+        <input id="create-startingStack" type="number" value="20000" min="100" step="100" />
       </label>
       <label>리바인 칩
-        <input id="create-rebuyAmount" type="number" value="5000" min="100" step="100" />
+        <input id="create-rebuyAmount" type="number" value="20000" min="100" step="100" />
       </label>
     </div>
 
     <div class="grid2">
       <label>시작 스몰블라인드
-        <input id="create-sb" type="number" value="25" min="1" />
+        <input id="create-sb" type="number" value="100" min="1" step="100" />
       </label>
       <label>시작 빅블라인드
-        <input id="create-bb" type="number" value="50" min="2" />
+        <input id="create-bb" type="number" value="200" min="2" step="100" />
       </label>
     </div>
 
-    <label>블라인드 상승 주기 (분, 0=고정)
-      <input id="create-levelMinutes" type="number" value="15" min="0" max="180" />
-    </label>
+    <div class="grid2">
+      <label>최대 리바인 횟수 (나·AI 공통, 0=무제한)
+        <input id="create-maxRebuys" type="number" value="0" min="0" max="999" />
+      </label>
+      <label>애드온 칩 (0=사용안함)
+        <input id="create-addOnAmount" type="number" value="0" min="0" step="100" />
+      </label>
+    </div>
+
+    <div class="grid2">
+      <label>블라인드 상승 주기 (분, 0=고정)
+        <input id="create-levelMinutes" type="number" value="15" min="0" max="180" />
+      </label>
+      <label>AI 액션 텀 (초)
+        <input id="create-aiActionDelay" type="number" value="5" min="0" max="15" step="0.5" />
+      </label>
+    </div>
 
     <div class="row-buttons">
       <button id="btn-create-submit" class="btn primary">방 만들기</button>
@@ -90,8 +104,9 @@
     <ul id="lobby-seats" class="seat-list"></ul>
     <div class="row-buttons">
       <button id="btn-start-game" class="btn primary">게임 시작</button>
-      <span id="lobby-wait-msg" class="hint"></span>
+      <button id="btn-lobby-settings" class="btn ghost hidden">⚙ 설정 변경</button>
     </div>
+    <p id="lobby-wait-msg" class="hint"></p>
   </div>
 </section>
 
@@ -99,22 +114,27 @@
 <section id="screen-table" class="screen">
   <div class="table-top">
     <div id="blind-info" class="blind-info"></div>
-    <button id="btn-leave" class="btn tiny ghost">방 나가기</button>
+    <div class="table-top-buttons">
+      <button id="btn-addon" class="btn tiny warn hidden">애드온</button>
+      <button id="btn-table-settings" class="btn tiny ghost hidden">⚙</button>
+      <button id="btn-leave" class="btn tiny ghost">나가기</button>
+    </div>
   </div>
 
   <div class="table-wrap">
     <div id="table-oval" class="table-oval">
-      <div id="board-cards" class="board-cards"></div>
-      <div id="pot-display" class="pot-display"></div>
+      <div class="center-panel">
+        <div id="board-cards" class="board-cards"></div>
+        <div id="pot-display" class="pot-display"></div>
+      </div>
       <div id="seats-container"></div>
     </div>
   </div>
 
-  <div id="hand-result-banner" class="hand-result-banner hidden"></div>
-
   <div id="action-bar" class="action-bar hidden">
+    <div id="quick-bet-row" class="quick-bet-row hidden"></div>
     <div class="raise-controls">
-      <input id="raise-slider" type="range" min="0" max="0" value="0" />
+      <input id="raise-slider" type="range" min="0" max="0" value="0" step="100" />
       <span id="raise-amount-label">0</span>
     </div>
     <div class="action-buttons">
@@ -127,6 +147,20 @@
   </div>
 </section>
 
+<!-- 핸드 결과 모달 -->
+<div id="result-modal" class="modal hidden">
+  <div class="modal-box wide">
+    <div class="result-header">
+      <h3 id="result-title">핸드 결과</h3>
+      <button id="btn-result-close" class="btn tiny ghost">닫기</button>
+    </div>
+    <div id="result-board" class="result-board"></div>
+    <ul id="result-list" class="result-list"></ul>
+    <p id="result-hint" class="hint">다음 핸드가 곧 자동으로 시작됩니다…</p>
+    <button id="btn-result-next" class="btn primary hidden">다음 핸드 준비 완료</button>
+  </div>
+</div>
+
 <!-- 리바인 모달 -->
 <div id="rebuy-modal" class="modal hidden">
   <div class="modal-box">
@@ -135,6 +169,58 @@
     <div class="row-buttons">
       <button id="btn-rebuy-yes" class="btn primary">리바인하고 계속</button>
       <button id="btn-rebuy-no" class="btn ghost">그만하기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 설정 모달 (로비: 전체 항목 / 게임 중: 일부 항목만) -->
+<div id="settings-modal" class="modal hidden">
+  <div class="modal-box wide">
+    <h3>설정 변경</h3>
+
+    <div class="grid2" data-lobby-only>
+      <label>AI 인원수 (<span id="set-aiCount-label">3</span>명)
+        <input id="set-aiCount" type="range" min="0" max="7" value="3" />
+      </label>
+      <label>시작 칩
+        <input id="set-startingStack" type="number" min="100" step="100" />
+      </label>
+    </div>
+    <div class="grid2" data-lobby-only>
+      <label>시작 스몰블라인드
+        <input id="set-startSb" type="number" min="1" step="100" />
+      </label>
+      <label>시작 빅블라인드
+        <input id="set-startBb" type="number" min="2" step="100" />
+      </label>
+    </div>
+    <label data-lobby-only>블라인드 상승 주기 (분, 0=고정)
+      <input id="set-levelMinutes" type="number" min="0" max="180" />
+    </label>
+
+    <div class="grid2">
+      <label>리바인 칩
+        <input id="set-rebuyAmount" type="number" min="100" step="100" />
+      </label>
+      <label>최대 리바인 횟수 (나·AI 공통, 0=무제한)
+        <input id="set-maxRebuys" type="number" min="0" max="999" />
+      </label>
+    </div>
+    <div class="grid2">
+      <label>애드온 칩 (0=사용안함)
+        <input id="set-addOnAmount" type="number" min="0" step="100" />
+      </label>
+      <label>AI 액션 텀 (초)
+        <input id="set-aiActionDelay" type="number" min="0" max="15" step="0.5" />
+      </label>
+    </div>
+    <label>AI 실수 빈도 (<span id="set-aiMistake-label">8</span>%)
+      <input id="set-aiMistake" type="range" min="0" max="30" value="8" />
+    </label>
+
+    <div class="row-buttons">
+      <button id="btn-settings-save" class="btn primary">저장</button>
+      <button id="btn-settings-cancel" class="btn ghost">취소</button>
     </div>
   </div>
 </div>

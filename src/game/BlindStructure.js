@@ -3,17 +3,14 @@
 // 데일리 게임처럼 시간 경과에 따라 자동으로 올라가는 블라인드 구조.
 // levels: [{ level, sb, bb, ante }]. 마지막 레벨 이후로는 마지막 레벨 값 유지.
 
-function generateDefaultStructure(startSb = 25, startBb = 50, count = 24) {
+function generateDefaultStructure(startSb = 100, startBb = 200, count = 18) {
   const levels = [];
+  const ratio = startBb / startSb;
   let sb = startSb;
-  let bb = startBb;
   for (let i = 1; i <= count; i++) {
-    levels.push({ level: i, sb, bb, ante: i > 6 ? Math.round(bb * 0.1) : 0 });
-    // 대략 3레벨마다 약 1.5배 상승 (표준 토너먼트 구조와 유사한 완만한 곡선)
-    if (i % 3 === 0) {
-      bb = Math.ceil((bb * 1.5) / 5) * 5;
-      sb = Math.ceil((bb / 2) / 5) * 5;
-    }
+    // 앤티 없음, 레벨업마다 스몰블라인드 기준 2배씩 상승
+    levels.push({ level: i, sb, bb: Math.round(sb * ratio), ante: 0 });
+    sb *= 2;
   }
   return levels;
 }
@@ -26,7 +23,7 @@ class BlindStructure {
    * @param {number} [opts.startSb]
    * @param {number} [opts.startBb]
    */
-  constructor({ levels, levelDurationMinutes = 15, startSb = 25, startBb = 50 } = {}) {
+  constructor({ levels, levelDurationMinutes = 15, startSb = 100, startBb = 200 } = {}) {
     this.levels = levels && levels.length ? levels : generateDefaultStructure(startSb, startBb);
     this.levelDurationMinutes = levelDurationMinutes;
     this.startedAt = null;

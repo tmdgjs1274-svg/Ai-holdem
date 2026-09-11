@@ -23,6 +23,7 @@ html, body {
 
 h1 { margin: 0 0 4px; font-size: 26px; text-align: center; }
 h2 { margin: 0 0 16px; }
+h3 { margin: 0 0 12px; }
 .sub { text-align: center; color: #9fd8ba; margin-bottom: 24px; font-size: 14px; }
 
 label { display: block; font-size: 13px; color: #bfe8cf; margin: 12px 0 4px; }
@@ -48,8 +49,8 @@ input[type=range] { width: 100%; }
 .btn.tiny { width: auto; padding: 6px 12px; margin: 0; font-size: 12px; display: inline-block; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.row-buttons { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
-.row-buttons .btn { margin-top: 0; }
+.row-buttons { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+.row-buttons .btn { margin-top: 0; flex: 1; min-width: 120px; }
 
 .room-code { font-size: 22px; font-weight: 700; letter-spacing: 3px; color: #e2b93b; }
 .hint { font-size: 12px; color: #9fd8ba; }
@@ -65,10 +66,11 @@ input[type=range] { width: 100%; }
 
 /* ---- 테이블 화면 ---- */
 #screen-table { flex-direction: column; padding: 8px; align-items: stretch; }
-.table-top { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; }
-.blind-info { font-size: 13px; color: #e2b93b; }
+.table-top { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 8px; flex-wrap: wrap; }
+.blind-info { font-size: 13px; color: #e2b93b; font-weight: 600; }
+.table-top-buttons { display: flex; gap: 8px; align-items: center; }
 
-.table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; }
+.table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-height: 0; }
 .table-oval {
   position: relative;
   width: min(94vw, 760px);
@@ -77,16 +79,37 @@ input[type=range] { width: 100%; }
   border: 10px solid #5a3a1e;
   border-radius: 50% / 50%;
   box-shadow: inset 0 0 60px rgba(0,0,0,0.4);
+  transition: width .15s ease, height .15s ease;
 }
 
-.board-cards {
-  position: absolute; top: 38%; left: 50%; transform: translate(-50%, -50%);
-  display: flex; gap: 6px;
+/* 너비가 좁아지면 테이블을 세로로 길게 재구성해서 좌석/카드/팟이 겹치지 않도록 함 */
+@media (max-width: 680px) {
+  .table-oval {
+    width: min(88vw, 380px);
+    height: min(150vw, 640px);
+    border-radius: 50% / 42%;
+  }
 }
-.pot-display {
-  position: absolute; top: 24%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 14px; color: #e2b93b; font-weight: 700;
+@media (max-width: 400px) {
+  .table-oval {
+    width: min(90vw, 340px);
+    height: min(165vw, 620px);
+  }
 }
+
+/* 보드카드/팟 표시는 항상 좌석 이름표보다 위에 그려지도록 별도 레이어(z-index)로 분리 */
+.center-panel {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  z-index: 20;
+  background: rgba(6, 26, 17, 0.6);
+  padding: 10px 20px;
+  border-radius: 14px;
+  pointer-events: none;
+  max-width: 80%;
+}
+.board-cards { position: static; transform: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.pot-display { position: static; transform: none; font-size: 14px; color: #e2b93b; font-weight: 700; white-space: nowrap; }
 
 .playing-card {
   width: 34px; height: 48px; border-radius: 5px; background: #fff; color: #111;
@@ -98,29 +121,60 @@ input[type=range] { width: 100%; }
 
 .seat {
   position: absolute; width: 108px; text-align: center; transform: translate(-50%, -50%);
+  z-index: 2;
+  transition: opacity .2s ease;
 }
+.seat.acting { z-index: 5; }
 .seat .name-plate {
   background: #0e2e20; border: 1px solid #2a6b48; border-radius: 8px; padding: 4px 6px; font-size: 12px;
   position: relative;
+  overflow: visible;
 }
-.seat.acting .name-plate { border-color: #e2b93b; box-shadow: 0 0 10px rgba(226,185,59,0.6); }
-.seat.folded .name-plate { opacity: 0.4; }
+.seat.acting .name-plate { border-color: #e2b93b; box-shadow: 0 0 14px rgba(226,185,59,0.75); background: #1a4a30; }
+.seat.folded { opacity: 0.45; }
+.seat.folded .name-plate { border-color: #6b2a2a; }
 .seat .stack { color: #cfe9db; font-size: 11px; }
-.seat .bet-chip { font-size: 11px; color: #e2b93b; margin-top: 2px; }
-.seat .hole-cards { display: flex; gap: 3px; justify-content: center; margin-bottom: 4px; }
+.seat .bet-chip { font-size: 11px; color: #e2b93b; margin-top: 2px; font-weight: 700; }
+.seat .hole-cards { display: flex; gap: 3px; justify-content: center; margin-bottom: 4px; min-height: 48px; }
 .seat .pos-badge {
-  position: absolute; top: -8px; right: -8px; background: #e2b93b; color: #1a1a1a;
-  border-radius: 50%; width: 20px; height: 20px; font-size: 10px; font-weight: 800;
-  display: flex; align-items: center; justify-content: center;
+  position: absolute; top: -10px; right: -10px; background: #e2b93b; color: #1a1a1a;
+  border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 800;
+  min-width: 22px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
 }
 
-.hand-result-banner {
-  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-  background: #1f5c3f; border: 1px solid #e2b93b; padding: 10px 18px; border-radius: 10px;
-  font-size: 14px; z-index: 20; max-width: 90vw; text-align: center;
+/* 폴드 스탬프: 폴드한 플레이어를 명확하게 구분 */
+.seat .fold-stamp { display: none; }
+.seat.folded .fold-stamp {
+  display: block; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-16deg);
+  background: #b3392f; color: #fff; font-weight: 800; font-size: 11px;
+  padding: 3px 12px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.5);
+  letter-spacing: 1px; z-index: 3; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+
+/* AI/사람 액션 발생 시 눈에 띄는 말풍선 */
+.seat .action-bubble {
+  position: absolute; top: -36px; left: 50%; transform: translateX(-50%);
+  background: #e2b93b; color: #1a1a1a; font-weight: 800; font-size: 12px;
+  padding: 5px 12px; border-radius: 14px; white-space: nowrap; z-index: 10;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.55);
+  animation: bubblePop .22s ease-out;
+}
+.seat .action-bubble.fold-bubble { background: #b3392f; color: #fff; }
+.seat .action-bubble.allin-bubble { background: #a4531a; color: #fff; }
+@keyframes bubblePop {
+  from { transform: translateX(-50%) scale(0.5); opacity: 0; }
+  to { transform: translateX(-50%) scale(1); opacity: 1; }
 }
 
 .action-bar { padding: 10px; background: #0e2e20; border-top: 1px solid #2a6b48; }
+.quick-bet-row { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.quick-bet-row .btn {
+  flex: 1; min-width: 56px; margin: 0; padding: 8px 4px; font-size: 12px;
+  background: #1f5c3f; color: #fff;
+}
+.quick-bet-row .btn:active { background: #e2b93b; color: #1a1a1a; }
 .raise-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .raise-controls input[type=range] { flex: 1; }
 #raise-amount-label { min-width: 70px; text-align: right; font-weight: 700; color: #e2b93b; }
@@ -130,10 +184,33 @@ input[type=range] { width: 100%; }
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: flex; align-items: center; justify-content: center; z-index: 50;
+  padding: 16px;
 }
 .modal-box {
   background: #123d2b; border: 1px solid #2a6b48; border-radius: 14px; padding: 24px; max-width: 340px; text-align: center;
+  max-height: 90vh; overflow-y: auto; width: 100%;
 }
+.modal-box.wide { max-width: 480px; text-align: left; }
+
+/* 결과 모달 */
+.result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.result-header h3 { margin: 0; }
+.result-board { display: flex; gap: 6px; justify-content: center; margin: 10px 0 16px; }
+.result-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.result-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; background: #0e2e20; border-radius: 8px; border: 1px solid #234;
+  font-size: 13px;
+}
+.result-list li.winner { border-color: #e2b93b; background: rgba(226,185,59,0.15); }
+.result-list .r-name { font-weight: 700; }
+.result-list .r-hand { color: #9fd8ba; font-size: 12px; }
+.result-list .r-cards { display: flex; gap: 3px; }
+.result-list .r-cards .playing-card { width: 26px; height: 36px; font-size: 12px; }
+.result-list .r-amount { color: #e2b93b; font-weight: 700; white-space: nowrap; }
+
+/* 설정 모달 */
+#settings-modal [data-lobby-only].hidden { display: none; }
 
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -146,4 +223,7 @@ input[type=range] { width: 100%; }
   .card { padding: 20px; }
   .action-buttons .btn { font-size: 11px; padding: 10px 2px; }
   .seat { width: 84px; }
+  .seat .hole-cards { min-height: 40px; }
+  .playing-card { width: 28px; height: 40px; font-size: 13px; }
+  .center-panel { padding: 8px 14px; }
 }

@@ -3,6 +3,7 @@
 const EventEmitter = require('events');
 const { Shoe, cardToString } = require('./Deck');
 const { evaluateBest, compareScore } = require('./HandEvaluator');
+const { getPositionCategory } = require('./Position');
 
 const STREETS = ['preflop', 'flop', 'turn', 'river', 'showdown'];
 
@@ -515,6 +516,7 @@ class GameEngine extends EventEmitter {
   }
 
   getPublicState(forSeatIndex = null) {
+    const order = this.hs ? this.handSeatsInOrder() : [];
     return {
       handNumber: this.handNumber,
       street: this.street,
@@ -543,6 +545,7 @@ class GameEngine extends EventEmitter {
           allIn: hs ? hs.allIn : false,
           committedThisStreet: hs ? hs.committedThisStreet : 0,
           committedThisHand: hs ? hs.committedThisHand : 0,
+          position: hs && hs.inHand ? getPositionCategory(order, s.seatIndex) : null,
           holeCards:
             hs && (forSeatIndex === s.seatIndex || this.street === 'showdown')
               ? hs.holeCards.map(cardToString)

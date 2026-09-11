@@ -1,6 +1,8 @@
 'use strict';
 
 const { chenScore } = require('./Equity');
+const { roundRaiseTo } = require('./util');
+const { getPositionCategory } = require('../game/Position');
 
 // 9-max 기준 포지션별 오픈레이즈 최소 점수 (풀링 기준선)
 const BASE_OPEN_THRESHOLD = {
@@ -11,23 +13,6 @@ const BASE_OPEN_THRESHOLD = {
   SB: 5.5,
   BB: 6, // BB 앞에 리밈만 있고 레이즈가 없을 때 이소레이즈 기준
 };
-
-function getPositionCategory(order, seatIndex) {
-  const k = order.length;
-  const p = order.indexOf(seatIndex);
-  if (p === -1) return null;
-  if (k === 2) return p === k - 1 ? 'BTN' : 'BB';
-  if (p === k - 1) return 'BTN';
-  if (p === 0) return 'SB';
-  if (p === 1) return 'BB';
-  const middleCount = k - 3;
-  const middleIdx = p - 2;
-  if (middleCount <= 1) return 'CO';
-  const f = middleIdx / (middleCount - 1);
-  if (f < 0.34) return 'UTG';
-  if (f < 0.67) return 'MP';
-  return 'CO';
-}
 
 // 테이블 인원수가 적을수록 레인지를 넓힌다 (9명 기준 대비 보정치)
 function loosenForTableSize(threshold, numActive) {
@@ -80,7 +65,8 @@ function sizePreflopRaise(engine, legal, ctx) {
     raiseTo = engine.currentBet * 3;
   }
   raiseTo = Math.round(raiseTo / bb) * bb;
-  return Math.max(legal.minRaiseTo, Math.min(raiseTo, legal.maxRaiseTo));
+  raiseTo = Math.max(legal.minRaiseTo, Math.min(raiseTo, legal.maxRaiseTo));
+  return roundRaiseTo(raiseTo, legal, 100); // 100원 단위로 보기 좋게 반올림
 }
 
 /**

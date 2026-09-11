@@ -53,6 +53,14 @@ function attachTableEvents(table) {
   });
   table.on('rebuyResult', (payload) => io.to(table.roomId).emit('rebuyResult', payload));
   table.on('aiRebuy', (payload) => io.to(table.roomId).emit('aiRebuy', payload));
+  table.on('addOnUsed', (payload) => io.to(table.roomId).emit('addOnUsed', payload));
+  table.on('playerAction', (payload) => io.to(table.roomId).emit('playerAction', payload));
+  table.on('awaitNextHand', (payload) => io.to(table.roomId).emit('awaitNextHand', payload));
+  table.on('readyStateChanged', (payload) => io.to(table.roomId).emit('readyStateChanged', payload));
+  table.on('configUpdated', () => {
+    broadcastLobby(table);
+    if (table.status === 'in_progress') broadcastState(table);
+  });
   table.on('roomClosed', (payload) => {
     io.to(table.roomId).emit('roomClosed', payload);
     rooms.delete(table.roomId);
@@ -77,13 +85,16 @@ io.on('connection', (socket) => {
         hostId: playerId,
         hostName: (opts && opts.hostName) || '호스트',
         aiCount: clampInt(opts && opts.aiCount, 0, 7, 3),
-        startingStack: clampInt(opts && opts.startingStack, 100, 1000000, 5000),
-        rebuyAmount: clampInt(opts && opts.rebuyAmount, 100, 1000000, opts && opts.startingStack),
-        startSb: clampInt(opts && opts.startSb, 1, 100000, 25),
-        startBb: clampInt(opts && opts.startBb, 2, 200000, 50),
+        startingStack: clampInt(opts && opts.startingStack, 100, 10000000, 20000),
+        rebuyAmount: clampInt(opts && opts.rebuyAmount, 100, 10000000, opts && opts.startingStack),
+        startSb: clampInt(opts && opts.startSb, 1, 100000, 100),
+        startBb: clampInt(opts && opts.startBb, 2, 200000, 200),
         levelDurationMinutes: clampInt(opts && opts.levelDurationMinutes, 0, 180, 15),
         aiAutoRebuy: opts ? opts.aiAutoRebuy !== false : true,
         aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
+        aiActionDelayMs: clampInt(opts && opts.aiActionDelayMs, 0, 15000, 5000),
+        maxRebuys: clampInt(opts && opts.maxRebuys, 0, 999, 0),
+        addOnAmount: clampInt(opts && opts.addOnAmount, 0, 10000000, 0),
       });
       attachTableEvents(table);
       rooms.set(table.roomId, table);
@@ -150,6 +161,27 @@ io.on('connection', (socket) => {
   socket.on('closeRoom', (_, cb) => {
     withTable(socket, cb, (table, meta) => {
       table.closeByHost(meta.playerId);
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('updateSettings', (patch, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      const config = table.updateConfig(meta.playerId, patch || {});
+      cb && cb({ ok: true, config });
+    });
+  });
+
+  socket.on('useAddOn', (_, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      table.useAddOn(meta.playerId);
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('readyForNextHand', (_, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      table.handleReadyForNextHand(meta.playerId);
       cb && cb({ ok: true });
     });
   });
