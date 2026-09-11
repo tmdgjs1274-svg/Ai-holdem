@@ -4,10 +4,11 @@ const EventEmitter = require('events');
 const { GameEngine } = require('../game/GameEngine');
 const { BlindStructure } = require('../game/BlindStructure');
 const { decideAction } = require('../ai/AIDecisionEngine');
+const { cardToString } = require('../game/Deck');
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 혼동되는 0/O, 1/I 제외
 
-function generateRoomCode(len = 6) {
+function generateRoomCode(len = 4) {
   let code = '';
   for (let i = 0; i < len; i++) {
     code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
@@ -27,6 +28,14 @@ const LIVE_EDITABLE = new Set([
   'aiMistakeRate', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
   'aiAutoRebuy', 'interHandDelayMs',
 ]);
+
+// 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
+// "다음 핸드 준비" 대기를 영원히 막는 일이 없도록 실제로 나간 것으로 처리한다.
+const DISCONNECT_LEAVE_MS = 45000;
+
+// 올인 쇼다운(남은 스트리트를 한 번에 몰아서 진행하는 경우) 카드를 한 장씩 순서대로 공개할 때
+// 카드 사이에 두는 텀(ms)
+const ALLIN_REVEAL_DELAY_MS = 900;
 
 class TableManager extends EventEmitter {
   /**
@@ -61,6 +70,8 @@ class TableManager extends EventEmitter {
       aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 5000,
       maxRebuys: config.maxRebuys != null ? config.maxRebuys : 0,
       addOnAmount: config.addOnAmount != null ? config.addOnAmount : 0,
+      // 올인 쇼다운에서 보드 카드를 한 장씩 공개할 때 카드 사이에 두는 텀(ms). 기본 900
+      allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
       aiCount: Math.max(0, Math.min(config.aiCount || 0, this.maxSeats - 1)),
       // 아래 3개는 블라인드 구조 표시용 미러(mirror) 필드 — 실제 값은 this.blinds가 갖고 있음
       startSb: config.startSb || 100,
@@ -151,6 +162,7 @@ class TableManager extends EventEmitter {
     const seatIdx = this.seatByPlayer[playerId];
     if (seatIdx == null) return null;
     this.humanBySeat[seatIdx].connected = true;
+    this.humanBySeat[seatIdx].disconnectedAt = null;
     clearTimeout(this._disconnectGuardTimer);
     return seatIdx;
   }
@@ -159,8 +171,43 @@ class TableManager extends EventEmitter {
     const seatIdx = this.seatByPlayer[playerId];
     if (seatIdx == null) return;
     this.humanBySeat[seatIdx].connected = false;
+    this.humanBySeat[seatIdx].disconnectedAt = Date.now();
     this.emit('playerDisconnected', { seatIndex: seatIdx, playerId });
     this._scheduleDisconnectGuard();
+  }
+
+  // 이번 핸드에 참여했는지와 무관하게, "지금 연결되어 있는" 사람 좌석만 골라낸다.
+  // 접속이 끊긴 사람에게 결과 확인(다음 핸드 준비)을 무한정 기다리지 않기 위해 사용한다.
+  _connectedHumanSeats() {
+    return Object.keys(this.humanBySeat)
+      .map(Number)
+      .filter((idx) => this.humanBySeat[idx] && this.humanBySeat[idx].connected !== false);
+  }
+
+  // 접속이 끊긴 채로 DISCONNECT_LEAVE_MS 이상 재연결하지 못한 사람이 있으면, 핸드와 핸드
+  // 사이의 안전한 시점에 실제로 "나간 것"으로 처리한다(호스트면 방 종료, 게스트면 퇴장 처리).
+  // 반환값이 true면 방이 종료된 것이므로 호출부는 이어서 다음 핸드를 진행하면 안 된다.
+  _reapLongDisconnectedHumans() {
+    const now = Date.now();
+    for (const seatIdxStr of Object.keys(this.humanBySeat)) {
+      const seatIdx = Number(seatIdxStr);
+      const meta = this.humanBySeat[seatIdx];
+      if (!meta || meta.connected || !meta.disconnectedAt) continue;
+      if (now - meta.disconnectedAt < DISCONNECT_LEAVE_MS) continue;
+
+      const playerId = meta.playerId;
+      if (seatIdx === 0) {
+        this._closeRoom('호스트의 연결이 오래 끊겨 게임이 종료되었습니다');
+        return true;
+      }
+      this.engine.removeSeat(seatIdx);
+      delete this.humanBySeat[seatIdx];
+      delete this.seatByPlayer[playerId];
+      this.readyForNext.delete(seatIdx);
+      this.emit('playerLeft', { seatIndex: seatIdx, playerId, reason: 'disconnected' });
+      this._broadcastState();
+    }
+    return false;
   }
 
   // 접속이 끊긴 인간 플레이어의 차례가 왔는데 응답이 없으면 일정 시간 후 자동 체크/폴드 처리
@@ -346,14 +393,14 @@ class TableManager extends EventEmitter {
         this._aiLoopActive = false;
         return;
       }
+      const boardLenBefore = this.engine.board.length;
       try {
         this.engine.applyAction(seat.seatIndex, decision.actionType, decision.amount || 0);
       } catch (e) {
         this._aiLoopActive = false;
         return;
       }
-      this._broadcastState();
-      this._aiLoopStep();
+      this._revealBoardThenContinue(boardLenBefore, () => this._aiLoopStep());
     }, delay);
   }
 
@@ -361,18 +408,60 @@ class TableManager extends EventEmitter {
     const seatIdx = this.seatByPlayer[playerId];
     if (seatIdx == null) throw new Error('참가자를 찾을 수 없습니다');
     if (this.engine.actingSeat !== seatIdx) throw new Error('지금은 당신의 차례가 아닙니다');
+    const boardLenBefore = this.engine.board.length;
     this.engine.applyAction(seatIdx, actionType, amount || 0);
-    this._broadcastState();
-    this._runAiLoop();
+    this._revealBoardThenContinue(boardLenBefore, () => this._runAiLoop());
   }
 
-  // 이번 핸드 종료 시점에 사람 좌석이 (폴드하지 않고) 하나라도 살아있었는지.
-  // true면 결과 화면에서 "다음 핸드 준비" 확인을 기다리고, false면 자동으로 짧게 넘어간다.
-  _wasAnyHumanActiveThisHand() {
+  // 올인 등으로 한 번의 액션에서 여러 장의 보드 카드가 한꺼번에 쇼다운까지 진행된 경우,
+  // 실제로는 이미 엔진 내부 상태가 최종(쇼다운)까지 다 처리되어 있지만, 클라이언트에는
+  // 카드를 한 장씩 순서대로(텀을 두고) 공개하는 것처럼 보여준다.
+  // 사람이 아무도 지켜보고 있지 않다면(전원 폴드) 굳이 텀을 둘 필요가 없으므로 즉시 진행한다.
+  _revealBoardThenContinue(boardLenBefore, continueFn) {
+    const boardLenAfter = this.engine.board.length;
+    const revealDelay = this.config.allinRevealDelayMs;
+    const isAllInRunout =
+      revealDelay > 0 && this.engine.street === 'showdown' && boardLenAfter > boardLenBefore && this._humanStillInHand();
+
+    if (!isAllInRunout) {
+      this._broadcastState();
+      continueFn();
+      return;
+    }
+
+    const fullBoard = this.engine.board.map(cardToString);
+    let revealed = boardLenBefore;
+
+    const revealNext = () => {
+      if (this.status !== 'in_progress') return;
+      revealed++;
+      // 일반 'state'가 아니라 별도 이벤트로 보내야 한다: server.js의 'state' 리스너는 인자를
+      // 무시하고 항상 현재(=이미 최종인) 엔진 상태를 새로 만들어 보내므로, 이 단계적 공개용
+      // 스냅샷은 그 경로를 타면 안 된다(즉시 전체 보드가 보여버림).
+      this.emit('boardReveal', { board: fullBoard.slice(0, revealed) });
+      clearTimeout(this._boardRevealTimer);
+      if (revealed < fullBoard.length) {
+        this._boardRevealTimer = setTimeout(revealNext, revealDelay);
+      } else {
+        this._boardRevealTimer = setTimeout(() => {
+          if (this.status !== 'in_progress') return;
+          this._broadcastState();
+          continueFn();
+        }, revealDelay);
+      }
+    };
+    revealNext();
+  }
+
+  // 이번 핸드에 사람 좌석이 (폴드 여부와 무관하게) 하나라도 참여(딜)했는지.
+  // true면 결과 화면에서 "다음 핸드 준비" 확인을 기다리고, false(예: 사람이 리바인 대기 등으로
+  // 이번 핸드를 아예 구경만 한 경우)면 자동으로 짧게 넘어간다.
+  // 주의: 일찍 폴드했더라도 자기 핸드 결과는 직접 확인하고 넘기고 싶어하므로, 폴드 여부는 보지 않는다.
+  _wasAnyHumanDealtThisHand() {
     const humanSeats = Object.keys(this.humanBySeat).map(Number);
     return humanSeats.some((idx) => {
       const hs = this.engine.hs && this.engine.hs[idx];
-      return hs && hs.inHand && !hs.folded;
+      return hs && hs.inHand;
     });
   }
 
@@ -382,8 +471,14 @@ class TableManager extends EventEmitter {
     // 같은 핸드에 대해 _onHandEnd가 중복 실행될 수 있다. 핸드 번호 기준으로 한 번만 처리한다.
     if (this._lastHandEndedNumber === this.engine.handNumber) return;
     this._lastHandEndedNumber = this.engine.handNumber;
+    // 이번 핸드 결과에 대한 "준비 완료" 집합은 핸드당 한 번만 초기화한다. 파산자가 있어서
+    // 리바인 결정을 기다리는 동안에도(=_afterHandEndScheduling이 나중에 다시 호출되는 동안에도)
+    // 이미 눌러둔 "다음 핸드 준비" 클릭이 지워지지 않게 하기 위함
+    // (예전에는 _afterHandEndScheduling이 호출될 때마다 지워서, 리바인 대기 중에 미리 누른
+    //  클릭이 사라지고 서버도 그 클릭을 무시해 버려 상대가 준비를 눌러도 인식되지 않는 버그가 있었다).
+    this.readyForNext.clear();
 
-    const requiresConfirm = this._wasAnyHumanActiveThisHand();
+    const requiresConfirm = this._wasAnyHumanDealtThisHand();
     this.emit('handResult', { ...this.engine.lastHandResult, requiresConfirm });
 
     // 파산자 처리
@@ -423,21 +518,40 @@ class TableManager extends EventEmitter {
   }
 
   // 핸드 종료 후 다음 핸드로 넘어가는 방식을 결정한다.
-  // - 사람이 전부 이번 핸드에서 죽었다면(폴드) 지켜볼 사람이 없으므로 예전처럼 짧게 자동 진행.
-  // - 사람이 한 명이라도 살아있었다면, 결과 화면을 모든 사람이 확인(다음 핸드 준비)할 때까지 대기.
+  // - 이번 핸드에 참여한 사람이 아예 없었다면(리바인 대기 등으로 구경만 함) 지켜볼 사람이 없으므로 예전처럼 짧게 자동 진행.
+  // - 사람이 한 명이라도 참여했다면(폴드했어도) 자기 결과는 직접 확인하고 싶어하므로,
+  //   결과 화면을 모든 사람이 확인(다음 핸드 준비)할 때까지 대기한다.
   _afterHandEndScheduling() {
-    this.readyForNext.clear();
-    const humanSeats = Object.keys(this.humanBySeat).map(Number);
-    const humanWasActive = this._wasAnyHumanActiveThisHand();
+    // 접속이 오래 끊긴 사람은(재연결 유예 시간을 넘겼다면) 여기서 실제로 정리한다.
+    // 방이 종료됐다면(호스트가 오래 끊긴 경우) 더 진행하지 않는다.
+    if (this._reapLongDisconnectedHumans()) return;
 
-    if (!humanWasActive) {
-      // 지켜볼 사람이 없는 핸드(사람 전원 폴드)는 예전처럼 결과만 짧게 보여주고 자동 진행
+    const humanWasDealt = this._wasAnyHumanDealtThisHand();
+
+    if (!humanWasDealt) {
+      // 이번 핸드에 참여한 사람이 없는 경우(예: AI끼리만 진행된 핸드)는 예전처럼 결과만 짧게 보여주고 자동 진행
       this._scheduleNextHand(this.config.interHandDelayMs);
       return;
     }
 
+    // 다음 핸드 준비 확인은 "지금 연결되어 있는" 사람 기준으로만 기다린다.
+    // 접속이 끊긴 사람 때문에 매 핸드 20초씩 기다리는 일이 없도록 하기 위함
+    // (그 사람은 DISCONNECT_LEAVE_MS 이상 지속되면 위에서 정리된다).
+    const humanSeats = this._connectedHumanSeats();
+    if (humanSeats.length === 0) {
+      this._scheduleNextHand(this.config.interHandDelayMs);
+      return;
+    }
+
+    // 리바인 결정을 기다리는 동안 이미 전원이 "다음 핸드 준비"를 눌러뒀을 수도 있으므로,
+    // 여기서 바로 확인해서 그렇다면 대기 화면을 띄우지 않고 곧장 다음 핸드로 넘어간다.
+    if (humanSeats.every((idx) => this.readyForNext.has(idx))) {
+      this._scheduleNextHand(0);
+      return;
+    }
+
     clearTimeout(this._handTimer);
-    this.emit('awaitNextHand', { humanSeats });
+    this.emit('awaitNextHand', { humanSeats, readySeats: [...this.readyForNext] });
     clearTimeout(this._nextHandFallbackTimer);
     // 응답 없는(자리 비움) 플레이어 때문에 게임이 영원히 멈추지 않도록 하는 안전장치
     this._nextHandFallbackTimer = setTimeout(() => this._playNextHand(), 20000);
@@ -446,11 +560,16 @@ class TableManager extends EventEmitter {
   handleReadyForNextHand(playerId) {
     const seatIdx = this.seatByPlayer[playerId];
     if (seatIdx == null) return;
-    if (this.status !== 'in_progress' || this.pendingRebuy.size > 0) return;
+    if (this.status !== 'in_progress') return;
+    // 리바인 결정이 아직 안 끝났어도 "다음 핸드 준비" 클릭 자체는 기록해둔다.
+    // (예전에는 이 시점에 pendingRebuy가 남아있으면 클릭을 통째로 무시해 버려서, 상대가
+    //  리바인을 고민하는 동안 미리 눌러둔 쪽의 클릭이 없었던 일이 되는 버그가 있었다.
+    //  그 결과 나중에 다음 핸드로 못 넘어가고 20초 안전장치가 발동할 때까지 멈춰 있었다.)
     this.readyForNext.add(seatIdx);
     this.emit('readyStateChanged', { readySeats: [...this.readyForNext] });
+    if (this.pendingRebuy.size > 0) return; // 리바인 결정이 끝나면 _afterHandEndScheduling에서 이어서 확인함
 
-    const humanSeats = Object.keys(this.humanBySeat).map(Number);
+    const humanSeats = this._connectedHumanSeats();
     const allReady = humanSeats.length > 0 && humanSeats.every((idx) => this.readyForNext.has(idx));
     if (allReady) {
       clearTimeout(this._nextHandFallbackTimer);
@@ -516,6 +635,7 @@ class TableManager extends EventEmitter {
     clearTimeout(this._disconnectGuardTimer);
     clearTimeout(this._aiActionTimer);
     clearTimeout(this._nextHandFallbackTimer);
+    clearTimeout(this._boardRevealTimer);
     this._aiLoopActive = false;
     this.emit('roomClosed', { reason });
   }
@@ -539,7 +659,9 @@ class TableManager extends EventEmitter {
     };
   }
 
-  getPublicState(forPlayerId = null) {
+  // boardOverride: 올인 쇼다운 카드를 한 장씩 순서대로 공개하는 동안, 실제 엔진은 이미 최종
+  // 상태(전체 보드)까지 가 있지만 클라이언트에는 그중 일부만 보여주기 위한 용도.
+  getPublicState(forPlayerId = null, boardOverride = null) {
     const forSeat = forPlayerId != null ? this.seatByPlayer[forPlayerId] : null;
     const base = {
       roomId: this.roomId,
@@ -553,6 +675,7 @@ class TableManager extends EventEmitter {
         this.config.addOnAmount > 0 && forSeat != null && !this.addOnUsed.has(forSeat) && this.status === 'in_progress',
       ...this.engine.getPublicState(forSeat),
     };
+    if (boardOverride) base.board = boardOverride;
     if (forSeat != null && this.engine.actingSeat === forSeat) {
       base.legalActions = this.engine.getLegalActions(forSeat);
     }

@@ -55,6 +55,10 @@ input[type=range] { width: 100%; }
 .room-code { font-size: 22px; font-weight: 700; letter-spacing: 3px; color: #e2b93b; }
 .hint { font-size: 12px; color: #9fd8ba; }
 
+.qr-box { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 16px 0; }
+.qr-img { width: 160px; height: 160px; background: #fff; border-radius: 10px; padding: 8px; }
+.qr-box .hint { text-align: center; }
+
 .seat-list { list-style: none; padding: 0; margin: 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .seat-list li {
   display: flex; justify-content: space-between; padding: 10px 14px;
@@ -65,16 +69,23 @@ input[type=range] { width: 100%; }
 .seat-list li .tag.empty { background: #444; color: #aaa; }
 
 /* ---- 테이블 화면 ---- */
-#screen-table { flex-direction: column; padding: 8px; align-items: stretch; }
-.table-top { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 8px; flex-wrap: wrap; }
+/* 화면에 딱 맞춰 높이를 고정하고(스크롤 없이) 위/아래는 고정, 가운데 테이블만 남는 공간에 맞춰 줄어들게 함.
+   100dvh를 지원하는 브라우저는 주소창 등 UI를 제외한 실제 보이는 높이를 쓰고, 미지원 브라우저는 100vh로 대체. */
+#screen-table {
+  flex-direction: column; padding: 8px; align-items: stretch;
+  height: 100vh; height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.table-top { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 .blind-info { font-size: 13px; color: #e2b93b; font-weight: 600; }
 .table-top-buttons { display: flex; gap: 8px; align-items: center; }
 
-.table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-height: 0; }
+.table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-height: 0; overflow: hidden; }
 .table-oval {
   position: relative;
   width: min(94vw, 760px);
-  height: min(60vw, 420px);
+  height: min(60vw, 420px, 55vh);
   background: radial-gradient(ellipse at center, #1a6b47 0%, #0e4530 70%);
   border: 10px solid #5a3a1e;
   border-radius: 50% / 50%;
@@ -82,19 +93,37 @@ input[type=range] { width: 100%; }
   transition: width .15s ease, height .15s ease;
 }
 
-/* 너비가 좁아지면 테이블을 세로로 길게 재구성해서 좌석/카드/팟이 겹치지 않도록 함 */
-@media (max-width: 680px) {
+/* 세로가 긴 화면(휴대폰 세로모드)에서는 테이블을 세로로 길게 재구성해서 좌석/카드/팟이 겹치지 않도록 함.
+   가로모드(orientation: landscape)는 폭이 680px 미만이어도 이 규칙을 타지 않도록 orientation을 함께 검사한다. */
+@media (max-width: 680px) and (orientation: portrait) {
   .table-oval {
-    width: min(88vw, 380px);
-    height: min(150vw, 640px);
+    width: min(88vw, 380px, 46vh);
+    height: min(150vw, 640px, 64vh);
     border-radius: 50% / 42%;
   }
 }
-@media (max-width: 400px) {
+@media (max-width: 400px) and (orientation: portrait) {
   .table-oval {
-    width: min(90vw, 340px);
-    height: min(165vw, 620px);
+    width: min(90vw, 340px, 46vh);
+    height: min(165vw, 620px, 64vh);
   }
+}
+
+/* 휴대폰 가로모드: 세로 높이가 작으므로 세로형(portrait) 오벌 대신 가로형을 유지하되,
+   화면 높이에 맞춰 오벌과 좌석/카드/액션바를 더 작게 줄여 스크롤 없이 한 화면에 들어오게 함 */
+@media (orientation: landscape) and (max-height: 520px) {
+  .table-oval { width: min(90vw, 760px, 150vh); height: min(50vh, 60vw, 420px); }
+  .seat { width: 76px; }
+  .seat .name-plate { padding: 3px 5px; font-size: 11px; }
+  .seat .hole-cards { min-height: 32px; margin-bottom: 2px; }
+  .playing-card { width: 22px; height: 32px; font-size: 12px; }
+  .center-panel { padding: 6px 10px; gap: 4px; }
+  .pot-display { font-size: 12px; }
+  .table-top { padding: 4px 8px; }
+  .action-bar { padding: 6px; }
+  .raise-controls { margin-bottom: 6px; gap: 6px; }
+  .action-buttons .btn { padding: 8px 4px; font-size: 11px; }
+  .quick-bet-popup .btn { padding: 6px 8px; font-size: 11px; }
 }
 
 /* 보드카드/팟 표시는 항상 좌석 이름표보다 위에 그려지도록 별도 레이어(z-index)로 분리 */
@@ -106,9 +135,20 @@ input[type=range] { width: 100%; }
   padding: 10px 20px;
   border-radius: 14px;
   pointer-events: none;
-  max-width: 80%;
+  /* left:50% + transform으로 가운데 정렬하면 브라우저의 shrink-to-fit 계산이 가용 너비를
+     실제보다 절반 가까이 좁게 잡아, 커뮤니티 카드 5장이 한 줄에 다 들어갈 너비가 있어도
+     줄바꿈되는 문제가 있었다. width를 명시적으로 내용 크기에 맞춰 이 문제를 없앤다. */
+  width: max-content;
+  max-width: 92%;
 }
-.board-cards { position: static; transform: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.board-cards { position: static; transform: none; display: flex; gap: 6px; flex-wrap: nowrap; justify-content: center; perspective: 600px; }
+/* 새로 공개되는 보드 카드가 뒤집히듯 나타나는 애니메이션 (올인 쇼다운에서 한 장씩 순서대로 공개할 때 사용) */
+.card-flip-in { animation: cardFlipIn .4s ease-out both; }
+@keyframes cardFlipIn {
+  from { transform: rotateY(90deg) scale(0.85); opacity: 0; }
+  60% { transform: rotateY(-12deg) scale(1.03); opacity: 1; }
+  to { transform: rotateY(0deg) scale(1); opacity: 1; }
+}
 .pot-display { position: static; transform: none; font-size: 14px; color: #e2b93b; font-weight: 700; white-space: nowrap; }
 
 .playing-card {
@@ -168,18 +208,32 @@ input[type=range] { width: 100%; }
   to { transform: translateX(-50%) scale(1); opacity: 1; }
 }
 
-.action-bar { padding: 10px; background: #0e2e20; border-top: 1px solid #2a6b48; }
-.quick-bet-row { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
-.quick-bet-row .btn {
-  flex: 1; min-width: 56px; margin: 0; padding: 8px 4px; font-size: 12px;
-  background: #1f5c3f; color: #fff;
-}
-.quick-bet-row .btn:active { background: #e2b93b; color: #1a1a1a; }
-.raise-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.action-bar { padding: 10px; background: #0e2e20; border-top: 1px solid #2a6b48; flex-shrink: 0; }
+.raise-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .raise-controls input[type=range] { flex: 1; }
-#raise-amount-label { min-width: 70px; text-align: right; font-weight: 700; color: #e2b93b; }
+.raise-controls .step-btn { width: auto; padding: 8px 12px; font-size: 15px; font-weight: 800; }
+.raise-amount-input {
+  width: 88px; flex-shrink: 0; text-align: right; font-weight: 700; color: #e2b93b;
+  background: #0e2e20; border: 1px solid #2a6b48; border-radius: 8px; padding: 8px 8px; font-size: 14px;
+}
+.raise-amount-input:disabled { opacity: 0.4; }
 .action-buttons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .action-buttons .btn { margin: 0; padding: 12px 4px; font-size: 13px; }
+
+/* 팟레이즈 콤보: 레이즈/올인 버튼 사이의 빈 칸에 토글 버튼을 두고, 누르면 위로 팟 비율 목록이 펼쳐짐 */
+.pot-raise-wrap { position: relative; }
+.pot-raise-toggle { width: 100%; height: 100%; margin: 0; padding: 12px 4px; font-size: 13px; }
+.quick-bet-popup {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 4px;
+  background: #123d2b; border: 1px solid #2a6b48; border-radius: 10px; padding: 6px;
+  min-width: 150px; z-index: 60; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
+.quick-bet-popup .btn {
+  margin: 0; padding: 8px 10px; font-size: 12px; white-space: nowrap;
+  background: #1f5c3f; color: #fff;
+}
+.quick-bet-popup .btn:active { background: #e2b93b; color: #1a1a1a; }
 
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -208,6 +262,15 @@ input[type=range] { width: 100%; }
 .result-list .r-cards { display: flex; gap: 3px; }
 .result-list .r-cards .playing-card { width: 26px; height: 36px; font-size: 12px; }
 .result-list .r-amount { color: #e2b93b; font-weight: 700; white-space: nowrap; }
+.result-list .r-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  background: #e2b93b; color: #123d2b; font-size: 10px; font-weight: 700; vertical-align: middle;
+}
+
+/* 결과 모달 안에 이어지는 리바인 확인 영역 (별도 모달로 겹치지 않도록 병합) */
+.result-rebuy { margin-top: 16px; text-align: center; }
+.result-rebuy hr { border: none; border-top: 1px solid #2a6b48; margin: 0 0 16px; }
+.result-rebuy h4 { margin: 0 0 8px; }
 
 /* 설정 모달 */
 #settings-modal [data-lobby-only].hidden { display: none; }

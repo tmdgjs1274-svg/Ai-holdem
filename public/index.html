@@ -86,7 +86,7 @@
       <input id="join-name" type="text" placeholder="닉네임" maxlength="12" />
     </label>
     <label>방 코드
-      <input id="join-code" type="text" placeholder="예: AB12CD" maxlength="8" style="text-transform:uppercase" />
+      <input id="join-code" type="text" placeholder="예: A1B2" maxlength="8" style="text-transform:uppercase" />
     </label>
     <div class="row-buttons">
       <button id="btn-join-submit" class="btn primary">참가하기</button>
@@ -101,6 +101,10 @@
     <h2>대기실</h2>
     <p>방 코드: <span id="lobby-roomcode" class="room-code"></span> <button id="btn-copy-code" class="btn tiny">복사</button></p>
     <p class="hint">이 코드를 친구에게 공유하면 함께 플레이할 수 있어요 (최대 1명 추가 참가).</p>
+    <div class="qr-box">
+      <img id="lobby-qr" class="qr-img" alt="참가 QR 코드" />
+      <p class="hint">카메라로 스캔하면 코드가 입력된 채로 참가 화면으로 바로 이동해요.</p>
+    </div>
     <ul id="lobby-seats" class="seat-list"></ul>
     <div class="row-buttons">
       <button id="btn-start-game" class="btn primary">게임 시작</button>
@@ -132,22 +136,27 @@
   </div>
 
   <div id="action-bar" class="action-bar hidden">
-    <div id="quick-bet-row" class="quick-bet-row hidden"></div>
     <div class="raise-controls">
+      <button id="btn-raise-minus" type="button" class="btn tiny ghost step-btn">－</button>
       <input id="raise-slider" type="range" min="0" max="0" value="0" step="100" />
-      <span id="raise-amount-label">0</span>
+      <button id="btn-raise-plus" type="button" class="btn tiny ghost step-btn">＋</button>
+      <input id="raise-amount-input" type="number" step="100" class="raise-amount-input" />
     </div>
     <div class="action-buttons">
       <button id="btn-fold" class="btn danger">폴드</button>
       <button id="btn-check" class="btn secondary">체크</button>
       <button id="btn-call" class="btn secondary">콜</button>
       <button id="btn-raise" class="btn primary">레이즈</button>
+      <div id="pot-raise-wrap" class="pot-raise-wrap hidden">
+        <button id="btn-pot-raise" type="button" class="btn ghost pot-raise-toggle">팟레이즈 ▾</button>
+        <div id="quick-bet-row" class="quick-bet-popup hidden"></div>
+      </div>
       <button id="btn-allin" class="btn warn">올인</button>
     </div>
   </div>
 </section>
 
-<!-- 핸드 결과 모달 -->
+<!-- 핸드 결과 모달 (리바인 필요 시 같은 모달 안에서 이어서 안내) -->
 <div id="result-modal" class="modal hidden">
   <div class="modal-box wide">
     <div class="result-header">
@@ -158,17 +167,15 @@
     <ul id="result-list" class="result-list"></ul>
     <p id="result-hint" class="hint">다음 핸드가 곧 자동으로 시작됩니다…</p>
     <button id="btn-result-next" class="btn primary hidden">다음 핸드 준비 완료</button>
-  </div>
-</div>
 
-<!-- 리바인 모달 -->
-<div id="rebuy-modal" class="modal hidden">
-  <div class="modal-box">
-    <h3>칩이 모두 소진되었습니다</h3>
-    <p id="rebuy-msg">다시 리바인하고 계속 플레이하시겠어요?</p>
-    <div class="row-buttons">
-      <button id="btn-rebuy-yes" class="btn primary">리바인하고 계속</button>
-      <button id="btn-rebuy-no" class="btn ghost">그만하기</button>
+    <div id="result-rebuy" class="result-rebuy hidden">
+      <hr />
+      <h4>칩이 모두 소진되었습니다</h4>
+      <p id="rebuy-msg">다시 리바인하고 계속 플레이하시겠어요?</p>
+      <div class="row-buttons">
+        <button id="btn-rebuy-yes" class="btn primary">리바인하고 계속</button>
+        <button id="btn-rebuy-no" class="btn ghost">그만하기</button>
+      </div>
     </div>
   </div>
 </div>

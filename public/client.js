@@ -27,6 +27,10 @@ let iAmReady = false;
 let lastRenderedHandNumber = null;
 let resultModalHandNumber = null;
 
+// 보드 카드가 새로 늘어났을 때만 뒤집히는 애니메이션을 주기 위한 기준값
+// (올인 쇼다운에서 한 장씩 순서대로 공개될 때도, 평소 스트리트 진행에도 동일하게 적용됨)
+let lastBoardCount = 0;
+
 // ---------- 화면 전환 ----------
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
@@ -36,6 +40,16 @@ function showScreen(id) {
 document.querySelectorAll('.btn-back').forEach((btn) => btn.addEventListener('click', () => showScreen('screen-home')));
 el('btn-go-create').addEventListener('click', () => showScreen('screen-create'));
 el('btn-go-join').addEventListener('click', () => showScreen('screen-join'));
+
+// 방 코드가 채워진 링크(QR 스캔 등, ?join=코드)로 들어온 경우, 참가 화면으로 바로 이동하고
+// 코드를 미리 입력해둔다. (기존에 진행 중이던 내 세션이 있다면 그 세션 재접속이 우선된다.)
+(function handleJoinLinkParam() {
+  const joinCode = new URLSearchParams(location.search).get('join');
+  if (!joinCode) return;
+  el('join-code').value = joinCode.toUpperCase();
+  showScreen('screen-join');
+  history.replaceState(null, '', location.pathname);
+})();
 
 el('create-aiCount').addEventListener('input', (e) => (el('ai-count-label').textContent = e.target.value));
 el('create-aiMistake').addEventListener('input', (e) => (el('ai-mistake-label').textContent = e.target.value));
@@ -102,9 +116,16 @@ el('btn-join-submit').addEventListener('click', () => {
 });
 
 // ---------- 로비 ----------
+// 방 코드가 입력된 채로 참가 화면으로 바로 이동하는 링크 (QR로 스캔했을 때 열리는 주소)
+function joinUrlFor(roomId) {
+  return `${location.origin}${location.pathname}?join=${encodeURIComponent(roomId)}`;
+}
+
 function renderLobby() {
   if (!latestLobby) return;
   el('lobby-roomcode').textContent = latestLobby.roomId;
+  const qrData = encodeURIComponent(joinUrlFor(latestLobby.roomId));
+  el('lobby-qr').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=0&data=${qrData}`;
   const list = el('lobby-seats');
   list.innerHTML = '';
   latestLobby.seats.forEach((s, idx) => {
@@ -248,6 +269,7 @@ socket.on('state', (state) => {
   }
   if (isNewHand) {
     hideResultModal();
+    lastBoardCount = 0;
   }
 });
 
@@ -273,16 +295,24 @@ socket.on('readyStateChanged', ({ readySeats }) => {
   updateResultFooter(humanSeats, readySeats || []);
 });
 
-socket.on('rebuyRequired', ({ seatIndex }) => {
-  if (latestState && seatIndex === latestState.mySeatIndex) {
-    el('rebuy-modal').classList.remove('hidden');
-  }
+socket.on('rebuyRequired', ({ seatIndex, rebuysUsed, maxRebuys }) => {
+  if (!latestState || seatIndex !== latestState.mySeatIndex) return;
+  // 결과 모달과 별개의 팝업을 띄우지 않고, 이미 열려있는(또는 곧 열릴) 결과 모달 안에 이어서 표시한다.
+  clearTimeout(resultAutoTimer);
+  el('rebuy-msg').textContent = maxRebuys > 0
+    ? `다시 리바인하고 계속 플레이하시겠어요? (리바인 ${rebuysUsed}/${maxRebuys}회 사용)`
+    : '다시 리바인하고 계속 플레이하시겠어요?';
+  el('result-rebuy').classList.remove('hidden');
+  el('btn-result-next').classList.add('hidden');
+  el('btn-result-close').classList.add('hidden');
+  el('result-hint').textContent = '리바인 여부를 선택해주세요.';
+  el('result-modal').classList.remove('hidden');
 });
 
 socket.on('rebuyResult', ({ seatIndex }) => {
-  if (latestState && seatIndex === latestState.mySeatIndex) {
-    el('rebuy-modal').classList.add('hidden');
-  }
+  if (!latestState || seatIndex !== latestState.mySeatIndex) return;
+  el('result-rebuy').classList.add('hidden');
+  applyResultFooterState();
 });
 
 socket.on('addOnUsed', ({ seatIndex, amount }) => {
@@ -295,7 +325,14 @@ socket.on('playerAction', (record) => {
   showActionBubble(record);
 });
 
+socket.on('playerLeft', ({ seatIndex }) => {
+  const name = seatDisplayName(seatIndex);
+  toast(`${name}님이 접속이 끊겨 게임에서 나갔습니다`);
+});
+
 socket.on('roomClosed', ({ reason }) => {
+  hideResultModal();
+  el('result-rebuy').classList.add('hidden');
   el('closed-msg').textContent = reason || '게임이 종료되었습니다.';
   el('closed-modal').classList.remove('hidden');
 });
@@ -378,7 +415,16 @@ function renderTable() {
 
   const board = el('board-cards');
   board.innerHTML = '';
-  (state.board || []).forEach((c) => board.appendChild(cardEl(c)));
+  (state.board || []).forEach((c, i) => {
+    const cardDiv = cardEl(c);
+    if (i >= lastBoardCount) {
+      // 새로 공개된 카드에만 뒤집히는 애니메이션을 준다(이미 있던 카드는 다시 애니메이션되지 않음)
+      cardDiv.classList.add('card-flip-in');
+      cardDiv.style.animationDelay = `${(i - lastBoardCount) * 90}ms`;
+    }
+    board.appendChild(cardDiv);
+  });
+  lastBoardCount = (state.board || []).length;
 
   el('btn-addon').classList.toggle('hidden', !state.addOnAvailable);
   el('btn-table-settings').classList.toggle('hidden', !amIHost());
@@ -488,11 +534,15 @@ function seatDisplayName(seatIndex) {
   return `좌석 ${seatIndex + 1}`;
 }
 
+let lastResult = null; // rebuy 확인 뒤 하단 안내를 복원하기 위해 마지막 결과를 기억해둔다
+
 function renderResultModal(result) {
   resultModalHandNumber = latestState ? latestState.handNumber : lastRenderedHandNumber;
   clearTimeout(resultAutoTimer);
   awaitingConfirm = false;
   iAmReady = false;
+  lastResult = result;
+  el('result-rebuy').classList.add('hidden');
 
   const board = el('result-board');
   board.innerHTML = '';
@@ -507,12 +557,18 @@ function renderResultModal(result) {
       const seatIdx = Number(seatIdxStr);
       const li = document.createElement('li');
       li.className = 'winner';
-      li.innerHTML = `<div><div class="r-name">${escapeHtml(seatDisplayName(seatIdx))}</div><div class="r-hand">상대가 폴드하여 팟 획득</div></div><div class="r-amount">+${amount}</div>`;
+      li.innerHTML = `<div><div class="r-name">${escapeHtml(seatDisplayName(seatIdx))}<span class="r-badge">승리</span></div><div class="r-hand">상대가 폴드하여 팟 획득</div></div><div class="r-amount">+${amount}</div>`;
       list.appendChild(li);
     });
   } else {
     el('result-title').textContent = '쇼다운 결과';
-    (result.showdown || []).forEach((entry) => {
+    // 누가 어떤 핸드로 이기고 졌는지 한눈에 비교할 수 있도록, 획득한 금액이 큰 순서(승자 먼저)로 정렬한다.
+    const entries = (result.showdown || []).slice().sort((a, b) => {
+      const wa = (result.winnings && result.winnings[a.seatIndex]) || 0;
+      const wb = (result.winnings && result.winnings[b.seatIndex]) || 0;
+      return wb - wa;
+    });
+    entries.forEach((entry) => {
       const amount = (result.winnings && result.winnings[entry.seatIndex]) || 0;
       const li = document.createElement('li');
       if (amount > 0) li.className = 'winner';
@@ -524,6 +580,12 @@ function renderResultModal(result) {
       const nameDiv = document.createElement('div');
       nameDiv.className = 'r-name';
       nameDiv.textContent = seatDisplayName(entry.seatIndex);
+      if (amount > 0) {
+        const badge = document.createElement('span');
+        badge.className = 'r-badge';
+        badge.textContent = '승리';
+        nameDiv.appendChild(badge);
+      }
       const handDiv = document.createElement('div');
       handDiv.className = 'r-hand';
       handDiv.textContent = entry.hand;
@@ -533,7 +595,7 @@ function renderResultModal(result) {
 
       const amountDiv = document.createElement('div');
       amountDiv.className = 'r-amount';
-      amountDiv.textContent = amount > 0 ? `+${amount}` : '-';
+      amountDiv.textContent = amount > 0 ? `+${amount}` : '패배';
 
       li.appendChild(left);
       li.appendChild(amountDiv);
@@ -541,11 +603,19 @@ function renderResultModal(result) {
     });
   }
 
+  applyResultFooterState();
+  el('result-modal').classList.remove('hidden');
+}
+
+// 결과 화면 하단(자동 진행 안내 / 다음 핸드 준비 버튼)을 마지막 결과 기준으로 다시 그린다.
+// 리바인 확인이 끝난 뒤 원래 안내로 복귀할 때도 재사용한다.
+function applyResultFooterState() {
+  if (!lastResult) return;
   el('btn-result-next').classList.add('hidden');
   el('btn-result-next').disabled = false;
   el('btn-result-next').textContent = '다음 핸드 준비 완료';
 
-  if (result.requiresConfirm) {
+  if (lastResult.requiresConfirm) {
     el('result-hint').textContent = '모든 플레이어가 준비를 완료하면 다음 핸드가 시작됩니다.';
     el('btn-result-next').classList.remove('hidden');
     el('btn-result-close').classList.add('hidden'); // 준비 확인이 필요한 핸드는 버튼으로만 진행
@@ -554,8 +624,6 @@ function renderResultModal(result) {
     el('btn-result-close').classList.remove('hidden');
     resultAutoTimer = setTimeout(hideResultModal, 5200);
   }
-
-  el('result-modal').classList.remove('hidden');
 }
 
 function updateResultFooter(humanSeats, readySeats) {
@@ -571,6 +639,7 @@ function updateResultFooter(humanSeats, readySeats) {
 function hideResultModal() {
   clearTimeout(resultAutoTimer);
   el('result-modal').classList.add('hidden');
+  el('result-rebuy').classList.add('hidden');
   awaitingConfirm = false;
 }
 

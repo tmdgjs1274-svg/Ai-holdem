@@ -85,6 +85,7 @@ async function run() {
       startSb: 25,
       startBb: 50,
       levelDurationMinutes: 0,
+      allinRevealDelayMs: 0, // 여러 핸드를 빠르게 돌려야 하는 테스트라 연출용 텀을 없앰
       interHandDelayMs: 15,
       aiActionDelayMs: 0, // 여러 핸드를 빠르게 돌려야 하는 테스트라 텀을 없앰
       aiAutoRebuy: true,
@@ -127,6 +128,7 @@ async function run() {
       startSb: 25,
       startBb: 50,
       levelDurationMinutes: 0,
+      allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 2,
       aiActionDelayMs: 2,
       aiAutoRebuy: true,
@@ -159,6 +161,7 @@ async function run() {
       startSb: 25,
       startBb: 50,
       levelDurationMinutes: 0,
+      allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 15,
       aiActionDelayMs: 5,
       aiAutoRebuy: true,
@@ -204,6 +207,7 @@ async function run() {
       startSb: 25,
       startBb: 50,
       levelDurationMinutes: 0,
+      allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       maxRebuys: 1,
@@ -352,6 +356,53 @@ async function run() {
     table._closeRoom('test done');
   });
 
+  await check('사람이 일찍 폴드해도 자기 핸드에 참여했다면 결과 확인 대기 후 진행', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1,
+      startingStack: 3000,
+      startSb: 25,
+      startBb: 50,
+      levelDurationMinutes: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+    });
+    let awaitCount = 0;
+    let sawRequiresConfirmTrue = false;
+    table.on('awaitNextHand', () => { awaitCount++; });
+    table.on('handResult', (result) => {
+      if (result.requiresConfirm) sawRequiresConfirmTrue = true;
+    });
+    // 호스트는 자기 차례가 오면 항상 폴드(가능한 경우)한다.
+    const forceHostFold = () => {
+      const st = table.engine;
+      if (st.actingSeat === -1 || table.status !== 'in_progress') return;
+      const seat = st.seats[st.actingSeat];
+      if (!seat || seat.playerId !== 'host1') return;
+      const legal = st.getLegalActions(st.actingSeat);
+      if (!legal) return;
+      const action = legal.canFold ? 'fold' : legal.canCheck ? 'check' : 'call';
+      try {
+        table.handleAction('host1', action, 0);
+      } catch (e) {
+        // 무시
+      }
+    };
+    table.on('state', forceHostFold);
+    table.start();
+    await wait(400);
+    assert.strictEqual(sawRequiresConfirmTrue, true, '일찍 폴드했어도 이번 핸드에 참여했다면 requiresConfirm이 true여야 함');
+    const handNumberBefore = table.engine.handNumber;
+    await wait(500);
+    assert.ok(awaitCount > 0, '폴드했어도 다음 핸드 준비 확인(awaitNextHand)을 기다려야 함');
+    assert.strictEqual(table.engine.handNumber, handNumberBefore, '준비 확인 전에는 다음 핸드로 넘어가면 안 됨');
+    table.handleReadyForNextHand('host1');
+    await wait(200);
+    assert.ok(table.engine.handNumber > handNumberBefore, '준비 완료하면 다음 핸드로 진행되어야 함');
+    table._closeRoom('test done');
+  });
+
   await check('AI도 리바인 최대 횟수를 넘으면 자동 리바인을 멈춤', async () => {
     const table = new TableManager({
       hostId: 'host1',
@@ -361,6 +412,7 @@ async function run() {
       startSb: 25,
       startBb: 50,
       levelDurationMinutes: 0,
+      allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 5,
       aiActionDelayMs: 0,
       aiAutoRebuy: true,
@@ -379,6 +431,60 @@ async function run() {
     const aiRebuys = table.rebuyCounts[2] || 0;
     assert.ok(aiRebuys <= 1, `AI 리바인은 maxRebuys(1)를 넘지 않아야 함 (실제: ${aiRebuys})`);
     table._closeRoom('test done');
+  });
+
+  await check('올인 쇼다운에서는 보드 카드가 한 번에 다 공개되지 않고 한 장씩 순서대로 공개된다', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1,
+      startingStack: 60,
+      rebuyAmount: 60,
+      startSb: 25,
+      startBb: 50,
+      levelDurationMinutes: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      aiAutoRebuy: true,
+      maxRebuys: 999,
+    });
+
+    // 핸드별로 boardReveal에서 관찰한 보드 길이들을 모아둔다
+    let currentRevealLens = [];
+    const revealSequences = [];
+    table.on('boardReveal', ({ board }) => currentRevealLens.push(board.length));
+    table.on('handResult', () => {
+      if (currentRevealLens.length) revealSequences.push(currentRevealLens.slice());
+      currentRevealLens = [];
+    });
+
+    // 호스트는 자기 차례가 오면 항상 올인으로 밀어붙여서 올인 쇼다운이 자주 나오게 한다
+    const forceHostAllIn = () => {
+      if (table.status !== 'in_progress' || table.engine.actingSeat === -1) return;
+      const seat = table.engine.seats[table.engine.actingSeat];
+      if (!seat || seat.playerId !== 'host1') return;
+      try {
+        table.handleAction('host1', 'allin', 0);
+      } catch (e) {
+        // 무시
+      }
+    };
+    table.on('state', forceHostAllIn);
+    table.on('rebuyRequired', ({ playerId }) => {
+      if (playerId === 'host1') table.handleRebuyDecision('host1', true);
+    });
+    table.on('awaitNextHand', () => table.handleReadyForNextHand('host1'));
+
+    table.start();
+    await wait(8000);
+    table._closeRoom('test done');
+
+    assert.ok(revealSequences.length > 0, '최소 한 핸드는 올인 쇼다운에서 카드가 단계적으로 공개되어야 함');
+    for (const lens of revealSequences) {
+      for (let i = 1; i < lens.length; i++) {
+        assert.strictEqual(lens[i], lens[i - 1] + 1, `보드 카드는 한 번에 한 장씩만 공개되어야 함 (관찰된 길이: ${lens.join(',')})`);
+      }
+    }
   });
 
   console.log(`TableManager: ${n}개 테스트 통과`);

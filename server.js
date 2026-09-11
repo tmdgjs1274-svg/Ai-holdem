@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { TableManager } = require('./src/session/TableManager');
+const { TableManager, generateRoomCode } = require('./src/session/TableManager');
 
 const app = express();
 const server = http.createServer(app);
@@ -38,6 +38,18 @@ function broadcastLobby(table) {
 
 function attachTableEvents(table) {
   table.on('state', () => broadcastState(table));
+  // 올인 쇼다운 카드를 한 장씩 순서대로 공개하는 중간 스냅샷. 일반 state 이벤트와 달리
+  // "지금 엔진의 실제 상태"가 아니라 그중 일부(보드 카드 수)만 담은 스냅샷이므로,
+  // broadcastState(table)로 다시 계산하지 않고 전달받은 보드로 각자에게 맞춰 내려보낸다.
+  table.on('boardReveal', ({ board }) => {
+    const sockets = io.sockets.adapter.rooms.get(table.roomId);
+    if (!sockets) return;
+    for (const socketId of sockets) {
+      const meta = socketMeta.get(socketId);
+      if (!meta) continue;
+      io.to(socketId).emit('state', table.getPublicState(meta.playerId, board));
+    }
+  });
   table.on('gameStarted', () => {
     broadcastLobby(table);
     broadcastState(table);
@@ -46,6 +58,10 @@ function attachTableEvents(table) {
   table.on('blindLevel', (level) => io.to(table.roomId).emit('blindLevel', level));
   table.on('playerJoined', () => broadcastLobby(table));
   table.on('playerDisconnected', () => broadcastLobby(table));
+  table.on('playerLeft', (payload) => {
+    io.to(table.roomId).emit('playerLeft', payload);
+    broadcastLobby(table);
+  });
   table.on('rebuyRequired', ({ seatIndex, playerId }) => {
     io.to(table.roomId).emit('rebuyRequired', { seatIndex });
     const targetSocketId = findSocketByPlayer(table.roomId, playerId);
@@ -96,6 +112,10 @@ io.on('connection', (socket) => {
         maxRebuys: clampInt(opts && opts.maxRebuys, 0, 999, 0),
         addOnAmount: clampInt(opts && opts.addOnAmount, 0, 10000000, 0),
       });
+      // 방 코드가 4자리라 다른 방과 우연히 겹칠 수 있으니, 이미 쓰이고 있는 코드면 다시 뽑는다.
+      while (rooms.has(table.roomId)) {
+        table.roomId = generateRoomCode();
+      }
       attachTableEvents(table);
       rooms.set(table.roomId, table);
       socket.join(table.roomId);
