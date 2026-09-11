@@ -1,0 +1,17 @@
+{
+  "name": "holdem-ai",
+  "version": "0.1.0",
+  "description": "1인용 텍사스 홀덤 vs GTO 기반 AI 게임 (Node.js + Express + Socket.io)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "simulate": "node scripts/simulate.js",
+    "test": "node test/run-tests.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

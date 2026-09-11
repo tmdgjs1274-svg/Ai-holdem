@@ -1,0 +1,194 @@
+'use strict';
+
+const path = require('path');
+const crypto = require('crypto');
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const { TableManager } = require('./src/session/TableManager');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+/** roomId -> TableManager */
+const rooms = new Map();
+/** socket.id -> { roomId, playerId } */
+const socketMeta = new Map();
+
+function newPlayerId() {
+  return crypto.randomUUID();
+}
+
+function broadcastState(table) {
+  const sockets = io.sockets.adapter.rooms.get(table.roomId);
+  if (!sockets) return;
+  for (const socketId of sockets) {
+    const meta = socketMeta.get(socketId);
+    if (!meta) continue;
+    io.to(socketId).emit('state', table.getPublicState(meta.playerId));
+  }
+}
+
+function broadcastLobby(table) {
+  io.to(table.roomId).emit('lobbyState', table.getLobbyState());
+}
+
+function attachTableEvents(table) {
+  table.on('state', () => broadcastState(table));
+  table.on('gameStarted', () => {
+    broadcastLobby(table);
+    broadcastState(table);
+  });
+  table.on('handResult', (result) => io.to(table.roomId).emit('handResult', result));
+  table.on('blindLevel', (level) => io.to(table.roomId).emit('blindLevel', level));
+  table.on('playerJoined', () => broadcastLobby(table));
+  table.on('playerDisconnected', () => broadcastLobby(table));
+  table.on('rebuyRequired', ({ seatIndex, playerId }) => {
+    io.to(table.roomId).emit('rebuyRequired', { seatIndex });
+    const targetSocketId = findSocketByPlayer(table.roomId, playerId);
+    if (targetSocketId) io.to(targetSocketId).emit('yourRebuyDecision', { seatIndex });
+  });
+  table.on('rebuyResult', (payload) => io.to(table.roomId).emit('rebuyResult', payload));
+  table.on('aiRebuy', (payload) => io.to(table.roomId).emit('aiRebuy', payload));
+  table.on('roomClosed', (payload) => {
+    io.to(table.roomId).emit('roomClosed', payload);
+    rooms.delete(table.roomId);
+  });
+}
+
+function findSocketByPlayer(roomId, playerId) {
+  const sockets = io.sockets.adapter.rooms.get(roomId);
+  if (!sockets) return null;
+  for (const socketId of sockets) {
+    const meta = socketMeta.get(socketId);
+    if (meta && meta.playerId === playerId) return socketId;
+  }
+  return null;
+}
+
+io.on('connection', (socket) => {
+  socket.on('createRoom', (opts, cb) => {
+    try {
+      const playerId = newPlayerId();
+      const table = new TableManager({
+        hostId: playerId,
+        hostName: (opts && opts.hostName) || '호스트',
+        aiCount: clampInt(opts && opts.aiCount, 0, 7, 3),
+        startingStack: clampInt(opts && opts.startingStack, 100, 1000000, 5000),
+        rebuyAmount: clampInt(opts && opts.rebuyAmount, 100, 1000000, opts && opts.startingStack),
+        startSb: clampInt(opts && opts.startSb, 1, 100000, 25),
+        startBb: clampInt(opts && opts.startBb, 2, 200000, 50),
+        levelDurationMinutes: clampInt(opts && opts.levelDurationMinutes, 0, 180, 15),
+        aiAutoRebuy: opts ? opts.aiAutoRebuy !== false : true,
+        aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
+      });
+      attachTableEvents(table);
+      rooms.set(table.roomId, table);
+      socket.join(table.roomId);
+      socketMeta.set(socket.id, { roomId: table.roomId, playerId });
+      cb && cb({ ok: true, roomId: table.roomId, playerId, seatIndex: 0, lobby: table.getLobbyState() });
+    } catch (err) {
+      cb && cb({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on('joinRoom', ({ roomId, displayName }, cb) => {
+    try {
+      const table = rooms.get((roomId || '').toUpperCase());
+      if (!table) throw new Error('존재하지 않는 방 코드입니다');
+      const playerId = newPlayerId();
+      const seatIndex = table.addGuest(playerId, displayName);
+      socket.join(table.roomId);
+      socketMeta.set(socket.id, { roomId: table.roomId, playerId });
+      cb && cb({ ok: true, roomId: table.roomId, playerId, seatIndex, lobby: table.getLobbyState() });
+      broadcastLobby(table);
+    } catch (err) {
+      cb && cb({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on('rejoinRoom', ({ roomId, playerId }, cb) => {
+    try {
+      const table = rooms.get((roomId || '').toUpperCase());
+      if (!table) throw new Error('방을 찾을 수 없습니다 (이미 종료되었을 수 있습니다)');
+      const seatIndex = table.reconnect(playerId);
+      if (seatIndex == null) throw new Error('이 방의 참가자가 아닙니다');
+      socket.join(table.roomId);
+      socketMeta.set(socket.id, { roomId: table.roomId, playerId });
+      cb && cb({ ok: true, roomId: table.roomId, playerId, seatIndex, lobby: table.getLobbyState() });
+      broadcastState(table);
+    } catch (err) {
+      cb && cb({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on('startGame', (_, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      if (meta.playerId !== table.hostId) throw new Error('호스트만 게임을 시작할 수 있습니다');
+      table.start();
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('action', ({ actionType, amount }, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      table.handleAction(meta.playerId, actionType, amount);
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('rebuyDecision', ({ accept }, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      table.handleRebuyDecision(meta.playerId, !!accept);
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('closeRoom', (_, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      table.closeByHost(meta.playerId);
+      cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('disconnect', () => {
+    const meta = socketMeta.get(socket.id);
+    socketMeta.delete(socket.id);
+    if (!meta) return;
+    const table = rooms.get(meta.roomId);
+    if (table) table.disconnect(meta.playerId);
+  });
+
+  function withTable(socket, cb, fn) {
+    try {
+      const meta = socketMeta.get(socket.id);
+      if (!meta) throw new Error('방에 참가하지 않은 상태입니다');
+      const table = rooms.get(meta.roomId);
+      if (!table) throw new Error('방을 찾을 수 없습니다');
+      fn(table, meta);
+    } catch (err) {
+      cb && cb({ ok: false, error: err.message });
+    }
+  }
+});
+
+function clampInt(v, min, max, def) {
+  const n = parseInt(v, 10);
+  if (Number.isNaN(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+function clampFloat(v, min, max, def) {
+  const n = parseFloat(v);
+  if (Number.isNaN(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`홀덤 AI 서버 실행 중: http://localhost:${PORT}`);
+});
+
+module.exports = { app, server, io };
