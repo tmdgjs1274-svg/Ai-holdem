@@ -151,10 +151,10 @@ class GameEngine extends EventEmitter {
     this.sbIndex = sbIndex;
     this.bbIndex = bbIndex;
 
-    // 앤티: "BB 앤티" 방식만 지원한다 - 전원이 조금씩 내는 대신, 버튼 한 명이 빅블라인드와
-    // 동일한 금액(this.ante)을 혼자 내고 팟에 더해진다.
+    // 앤티: "빅블라인드 앤티" 방식만 지원한다 - 전원이 조금씩 내는 대신, 빅블라인드 좌석
+    // 한 명이 빅블라인드와 동일한 금액(this.ante)을 혼자 더 내고 팟에 더해진다(버튼이 아님).
     if (this.ante > 0) {
-      this._commit(this.buttonIndex, Math.min(this.ante, this.seats[this.buttonIndex].stack));
+      this._commit(bbIndex, Math.min(this.ante, this.seats[bbIndex].stack));
       // 앤티는 스트리트 커밋에 포함하지 않음 (베팅 라운드 콜금액 계산과 무관하도록 리셋)
       for (const seatIdx of inHandSeats) this.hs[seatIdx].committedThisStreet = 0;
     }

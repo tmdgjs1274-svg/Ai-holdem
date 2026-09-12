@@ -80,8 +80,10 @@ input[type=range] { width: 100%; }
   overflow: hidden;
 }
 .table-top { display: flex; justify-content: flex-end; align-items: center; padding: 6px 10px; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
-/* 팟 표시 바로 아래, 테이블 중앙 패널 안에 함께 표시 */
-.blind-info { font-size: 11px; color: #cfe9db; font-weight: 500; text-align: center; opacity: 0.9; }
+/* 팟 표시 바로 아래, 테이블 중앙 패널 안에 함께 표시. 블라인드 액수와 남은 시간을 한 줄로
+   이어붙이면 박스가 가로로 길어져 뒤의 카드/좌석을 가리므로 두 줄로 나눠 좁게 유지한다. */
+.blind-info { font-size: 11px; color: #cfe9db; font-weight: 500; text-align: center; opacity: 0.9; line-height: 1.4; }
+.blind-info-timer { font-size: 10px; color: #9fc9b3; opacity: 0.85; }
 .table-top-buttons { display: flex; gap: 8px; align-items: center; }
 
 .table-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; min-height: 0; overflow: hidden; }
@@ -123,6 +125,7 @@ input[type=range] { width: 100%; }
   .center-panel { padding: 6px 10px; gap: 4px; }
   .pot-display { font-size: 12px; }
   .blind-info { font-size: 10px; }
+  .blind-info-timer { font-size: 9px; }
   .table-top { padding: 4px 8px; }
   .action-bar { padding: 6px; }
   .raise-controls { margin-bottom: 6px; gap: 6px; }

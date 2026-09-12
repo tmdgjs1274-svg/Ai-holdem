@@ -21,18 +21,23 @@ const VOICE_ACTION_TEXT = { check: '체크', fold: '폴드', raise: '레이즈' 
 let cachedTtsVoice = null;
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   window.speechSynthesis.onvoiceschanged = () => { cachedTtsVoice = null; };
+  // 크롬 계열 브라우저는 음성 합성 엔진이 한동안 가만히 있으면(화면이 꺼지거나 탭이
+  // 백그라운드로 가는 등) 내부적으로 멈춰(paused) 그 뒤로 speak()를 불러도 조용히
+  // 무시되는 알려진 버그가 있다. 주기적으로 resume()을 불러서 이를 방지한다.
+  setInterval(() => {
+    try { window.speechSynthesis.resume(); } catch (e) { /* 무시 */ }
+  }, 5000);
 }
-// 모바일 크롬 등 일부 브라우저는 "사용자가 화면을 직접 터치/클릭한 반응"으로 호출된
-// speechSynthesis.speak()가 최소 한 번 있어야 그 뒤로 소켓 이벤트 등에서 자동으로 부르는
-// speak()도 소리가 난다(오디오 자동재생 제한과 비슷한 정책). 그래서 앱을 처음 터치/클릭하는
-// 순간 아주 짧고 조용한 발화를 한 번 실행해 이후의 액션 음성 안내가 막히지 않게 "잠금 해제"한다.
+// 모바일 브라우저 중 일부(특히 iOS 계열 WebKit)는 사용자가 직접 화면을 탭한 반응이 아니면
+// speak()가 막혀있을 수 있다. 앱을 처음 터치하는 순간 짧은 발화를 한 번 시도해 이후의 액션
+// 음성 안내가 막히지 않도록 미리 풀어둔다(브라우저에 따라 효과가 없을 수도 있음 - 아래 참고).
 let ttsUnlocked = false;
 function unlockTts() {
   if (ttsUnlocked || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   ttsUnlocked = true;
   try {
     const u = new SpeechSynthesisUtterance(' ');
-    u.volume = 0;
+    u.volume = 0.01;
     window.speechSynthesis.speak(u);
   } catch (e) {
     // 무시: 잠금 해제가 실패해도 이후 시도에서 다시 자연스럽게 걸릴 수 있음
@@ -61,23 +66,43 @@ function humanStillInHandNow() {
     (s) => s && s.type !== 'ai' && Array.isArray(s.holeCards) && s.holeCards.length > 0 && !s.folded
   );
 }
-function speakAction(record) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-  const text = VOICE_ACTION_TEXT[record && record.actionType];
-  if (!text) return; // 체크/레이즈/폴드가 아니면 소리 없음
-  if (!humanStillInHandNow()) return; // 사람이 모두 죽고 AI끼리만 진행 중이면 생략
+// 실제 음성 합성 호출부. 예전에는 매번 speak() 전에 cancel()을 불렀는데, 일부 모바일
+// 브라우저에서는 cancel() 직후의 speak()가 내부적으로 씹혀버리는(아무 소리도 안 나는) 경우가
+// 보고되어 있어 제거했다 - 어차피 체크/레이즈/폴드는 짧은 한 단어라 자연스럽게 큐잉되어도 된다.
+function speakText(text) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
   try {
-    window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
     utter.pitch = 0.55; // 중저음 느낌을 위해 피치를 낮춤
     utter.rate = 1.05;
     const voice = pickTtsVoice();
     if (voice) utter.voice = voice;
+    utter.onerror = (e) => {
+      // 사용자에게는 조용히 무시하되, 개발자 콘솔에서는 원인을 확인할 수 있게 남겨둔다
+      console.warn('[voice] 음성 재생 실패:', e && e.error);
+    };
     window.speechSynthesis.speak(utter);
+    return true;
   } catch (e) {
-    // 음성 합성이 실패해도 게임 진행에는 영향이 없도록 무시
+    console.warn('[voice] 음성 재생 예외:', e);
+    return false;
   }
+}
+function speakAction(record) {
+  const text = VOICE_ACTION_TEXT[record && record.actionType];
+  if (!text) return; // 체크/레이즈/폴드가 아니면 소리 없음
+  if (!humanStillInHandNow()) return; // 사람이 모두 죽고 AI끼리만 진행 중이면 생략
+  speakText(text);
+}
+// 설정 화면의 "소리 테스트" 버튼에서 호출한다. 사용자가 직접 탭한 순간 곧바로 speak()를
+// 호출하므로, 브라우저의 오디오 정책과 무관하게 소리가 나는지 그 자리에서 확인할 수 있다.
+// 여기서도 안 들린다면 코드 문제라기보다 기기의 미디어 볼륨이 꺼져있거나, 브라우저/OS에
+// 음성 합성(TTS) 엔진·한국어 음성 데이터가 설치되어 있지 않을 가능성이 크다.
+function testVoice() {
+  ttsUnlocked = true;
+  const ok = speakText('체크, 레이즈, 폴드');
+  if (!ok) toast('이 브라우저는 음성 합성을 지원하지 않아요');
 }
 
 let myPlayerId = localStorage.getItem('holdem_playerId') || null;
@@ -277,6 +302,7 @@ function closeSettingsModal() {
 el('btn-lobby-settings').addEventListener('click', openSettingsModal);
 el('btn-table-settings').addEventListener('click', openSettingsModal);
 el('btn-settings-cancel').addEventListener('click', closeSettingsModal);
+el('btn-test-voice').addEventListener('click', testVoice);
 
 el('btn-settings-save').addEventListener('click', () => {
   const isLobby = currentStatus() === 'lobby';
@@ -287,13 +313,15 @@ el('btn-settings-save').addEventListener('click', () => {
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
     aiMistakeRate: Number(el('set-aiMistake').value) / 100,
     aiSkillLevel: Number(el('set-aiSkill').value),
+    // 블라인드 상승 주기(레벨당 지속시간)는 게임 진행 중에도 바꿀 수 있다 (지금 레벨은 유지한 채
+    // 그 순간부터 새 주기로 다시 카운트다운됨)
+    levelDurationMinutes: Number(el('set-levelMinutes').value),
   };
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
     patch.startingStack = Number(el('set-startingStack').value);
     patch.startSb = Number(el('set-startSb').value);
     patch.startBb = Number(el('set-startBb').value);
-    patch.levelDurationMinutes = Number(el('set-levelMinutes').value);
     patch.bbAnte = el('set-bbAnte').checked;
   }
   socket.emit('updateSettings', patch, (res) => {
@@ -484,19 +512,32 @@ el('btn-leave').addEventListener('click', () => {
 });
 
 // ---------- 블라인드 정보 (실시간 카운트다운) ----------
+// 블라인드 액수와 "다음 레벨까지 남은 시간"을 한 줄로 이어붙이면 가로로 너무 길어져서
+// 팟 표시 아래 네모 박스가 커지고 뒤의 카드/좌석을 가린다는 피드백이 있어, 두 줄로 나눠 표시한다.
 function renderBlindInfo() {
   const level = blindTickBase ? blindTickBase.level : latestState && latestState.blindLevel;
   if (!level) return;
-  let text = `블라인드 ${fmt(level.sb)}/${fmt(level.bb)}`;
-  if (level.ante > 0) text += ` (BB 앤티 ${fmt(level.ante)})`;
+  let line1 = `블라인드 ${fmt(level.sb)}/${fmt(level.bb)}`;
+  if (level.ante > 0) line1 += ` (BB 앤티 ${fmt(level.ante)})`;
+  let line2 = '';
   if (level.msRemaining != null && !level.isFinalLevel) {
     const elapsed = blindTickBase ? Date.now() - blindTickBase.receivedAt : 0;
     const remaining = Math.max(0, level.msRemaining - elapsed);
     const m = Math.floor(remaining / 60000);
     const s = Math.floor((remaining % 60000) / 1000);
-    text += ` · 다음 레벨까지 ${m}:${String(s).padStart(2, '0')}`;
+    line2 = `다음 레벨까지 ${m}:${String(s).padStart(2, '0')}`;
   }
-  el('blind-info').textContent = text;
+  const box = el('blind-info');
+  box.innerHTML = '';
+  const l1 = document.createElement('div');
+  l1.textContent = line1;
+  box.appendChild(l1);
+  if (line2) {
+    const l2 = document.createElement('div');
+    l2.className = 'blind-info-timer';
+    l2.textContent = line2;
+    box.appendChild(l2);
+  }
 }
 clearInterval(blindTickTimer);
 blindTickTimer = setInterval(() => {

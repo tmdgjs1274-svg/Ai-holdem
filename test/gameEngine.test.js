@@ -124,26 +124,24 @@ function run() {
     assert.strictEqual(eng.currentBet, 100);
   });
 
-  check('BB 앤티: 버튼만 앤티를 내고(타플레이어는 안냄), 팟에 정상 반영', () => {
+  check('BB 앤티: 빅블라인드 좌석이 앤티를 내고(버튼/타플레이어는 안냄), 팟에 정상 반영', () => {
     const eng = makeEngine(3, { rng: seedRng(3) });
     eng.setBlinds(25, 50, 50); // 앤티 = BB와 동일 금액 (BB 앤티 포맷)
     const totalBefore = eng.totalChipsOnTable();
     eng.startHand();
-    const btn = eng.buttonIndex;
-    // 버튼은 앤티(50)까지 냈으므로 최소 앤티만큼은 차감되어 있어야 함
-    assert.ok(eng.seats[btn].stack <= 1000 - 50);
-    // 버튼이 아닌 좌석은 앤티를 내지 않음 (SB/BB 포스팅 금액만 차감)
+    const bb = eng.bbIndex;
+    // 빅블라인드는 정규 BB(50) + 앤티(50) = 100을 내야 함
+    assert.strictEqual(eng.seats[bb].stack, 1000 - 100, '빅블라인드는 BB+앤티를 합쳐서 냄');
+    // 빅블라인드가 아닌 좌석(버튼 포함)은 앤티를 내지 않음 (SB 포스팅 금액만 차감)
     for (const s of eng.seats) {
-      if (!s || s.seatIndex === btn) continue;
+      if (!s || s.seatIndex === bb) continue;
       if (s.seatIndex === eng.sbIndex) assert.strictEqual(s.stack, 1000 - 25);
-      else if (s.seatIndex === eng.bbIndex) assert.strictEqual(s.stack, 1000 - 50);
-      else assert.strictEqual(s.stack, 1000);
+      else assert.strictEqual(s.stack, 1000, '버튼을 포함해 SB/BB가 아닌 좌석은 앤티를 내지 않음');
     }
-    // 앤티는 스트리트 커밋액에 포함되지 않아야 함 (콜 금액 계산에 영향 없도록)
-    const btnHs = eng.hs[btn];
-    if (btn !== eng.sbIndex && btn !== eng.bbIndex) {
-      assert.strictEqual(btnHs.committedThisStreet, 0);
-    }
+    // 앤티는 스트리트 커밋액에 포함되지 않아야 함 (콜 금액 계산에 영향 없도록) -> BB의 스트리트
+    // 커밋액은 정규 블라인드(50)만 남아야 하고, 앤티(50)는 committedThisHand에만 반영됨
+    assert.strictEqual(eng.hs[bb].committedThisStreet, 50, 'BB의 스트리트 커밋액은 앤티를 제외한 정규 블라인드만이어야 함');
+    assert.strictEqual(eng.hs[bb].committedThisHand, 100, 'BB의 핸드 전체 커밋액은 BB+앤티 합산이어야 함');
     // 스택 + 팟(committedThisHand 총합)이 시작 전 총량과 같아야 함 (칩 보존)
     const totalAfter = eng.totalChipsOnTable() + eng.potNow();
     assert.strictEqual(totalBefore, totalAfter, '칩 총량 보존 (앤티 포함, 스택+팟)');

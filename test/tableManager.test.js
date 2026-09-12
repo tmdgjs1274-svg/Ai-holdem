@@ -374,13 +374,42 @@ async function run() {
 
   await check('블라인드 상승 주기(levelDurationMinutes)를 사용자가 직접 설정 가능(레벨별 개별 시간 없이 공통 적용)', async () => {
     const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000 });
-    assert.strictEqual(table.config.levelDurationMinutes, 15, '기본값은 15분');
+    assert.strictEqual(table.config.levelDurationMinutes, 5, '기본값은 5분');
     table.updateConfig('host1', { levelDurationMinutes: 20 });
     assert.strictEqual(table.config.levelDurationMinutes, 20);
     assert.strictEqual(table.blinds.levelDurationMinutes, 20);
     table.blinds.start(1_000_000);
     assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 19 * 60000), 0, '공통 주기이므로 19분에는 아직 레벨1');
     assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 20 * 60000), 1, '20분이 지나면 레벨2로 승급');
+  });
+
+  await check('게임 진행 중에도 블라인드 상승 주기는 변경 가능(지금 레벨은 유지한 채 새 주기로 다시 카운트)', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 1,
+      startingStack: 3000,
+      levelDurationMinutes: 15,
+      shuffleSeatsOnStart: false,
+    });
+    table.blinds.start(1_000_000);
+    // 15분 주기로 32분 경과 -> floor(32/15)=2, 즉 레벨3(인덱스2)
+    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 32 * 60000), 2, '변경 전: 15분 주기 기준 레벨3');
+
+    table.status = 'in_progress'; // updateConfig가 live-editable 경로를 타도록 진행 중 상태로 설정
+    const now = 1_000_000 + 32 * 60000;
+    const RealDateNow = Date.now;
+    Date.now = () => now; // setLevelDurationMinutes가 참조하는 현재 시각을 고정
+    try {
+      table.updateConfig('host1', { levelDurationMinutes: 5 });
+    } finally {
+      Date.now = RealDateNow;
+    }
+    assert.strictEqual(table.config.levelDurationMinutes, 5);
+    // 주기를 5분으로 바꿔도, 방금 전까지 있던 레벨3에서 그대로 유지되어야 한다(레벨이 튀면 안 됨)
+    assert.strictEqual(table.blinds.currentLevelIndex(now), 2, '주기 변경 직후에도 레벨이 유지되어야 함');
+    // 새 주기(5분) 기준으로 다시 카운트다운이 시작되므로, 변경 시점으로부터 5분 뒤에 레벨4로 승급
+    assert.strictEqual(table.blinds.currentLevelIndex(now + 4 * 60000), 2, '새 주기 기준 아직 4분이면 레벨 유지');
+    assert.strictEqual(table.blinds.currentLevelIndex(now + 5 * 60000), 3, '새 주기 기준 5분이 지나면 레벨4로 승급');
   });
 
   await check('게임 진행 중에는 aiCount/startingStack 같은 항목은 변경되지 않음(화이트리스트)', async () => {

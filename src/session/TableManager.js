@@ -26,7 +26,7 @@ const LOBBY_EDITABLE = new Set([
 ]);
 const LIVE_EDITABLE = new Set([
   'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
-  'interHandDelayMs',
+  'interHandDelayMs', 'levelDurationMinutes',
 ]);
 
 // 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
@@ -49,7 +49,7 @@ class TableManager extends EventEmitter {
    * @param {number} [config.startSb] 1레벨 스몰블라인드, 기본 100
    * @param {number} [config.startBb] 1레벨 빅블라인드, 기본 200
    * @param {number} [config.levelDurationMinutes] 모든 레벨 공통 지속시간(분). 0이면 블라인드 고정, 기본 15
-   * @param {boolean} [config.bbAnte] BB 앤티(버튼이 그 레벨 bb만큼 혼자 냄) 사용 여부, 기본 true
+   * @param {boolean} [config.bbAnte] BB 앤티(빅블라인드 좌석이 그 레벨 bb만큼 추가로 혼자 냄) 사용 여부, 기본 true
    * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
    * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
@@ -65,14 +65,15 @@ class TableManager extends EventEmitter {
     this.maxSeats = Math.min(config.maxSeats || 9, 9);
     this.config = {
       startingStack: config.startingStack || 20000,
-      rebuyAmount: config.rebuyAmount || config.startingStack || 20000,
+      // 기본 리바인 칩은 이제 시작 칩을 그대로 따라가지 않고 30,000으로 고정된 기본값을 갖는다.
+      rebuyAmount: config.rebuyAmount || 30000,
       aiMistakeRate: config.aiMistakeRate != null ? config.aiMistakeRate : 0.08,
       aiSkillLevel: config.aiSkillLevel != null ? Math.max(0, Math.min(100, config.aiSkillLevel)) : 75,
       interHandDelayMs: config.interHandDelayMs != null ? config.interHandDelayMs : 5000,
-      aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 5000,
+      aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 1500,
       // 0이면 리바인이 아예 불가능함을 의미한다(과거에는 0=무제한이었으나, 사람이 리바인을
-      // 명시적으로 통제할 수 있도록 "무제한" 개념 자체를 없앴다).
-      maxRebuys: config.maxRebuys != null ? config.maxRebuys : 0,
+      // 명시적으로 통제할 수 있도록 "무제한" 개념 자체를 없앴다). 기본값은 1회.
+      maxRebuys: config.maxRebuys != null ? config.maxRebuys : 1,
       addOnAmount: config.addOnAmount != null ? config.addOnAmount : 0,
       // 올인 쇼다운에서 보드 카드를 한 장씩 공개할 때 카드 사이에 두는 텀(ms). 기본 900
       allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
@@ -81,7 +82,7 @@ class TableManager extends EventEmitter {
       // 아래 2개는 블라인드 구조 표시용 미러(mirror) 필드 — 실제 값은 this.blinds가 갖고 있음
       startSb: config.startSb || 100,
       startBb: config.startBb || 200,
-      levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 15,
+      levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 5,
     };
 
     this.rng = config.rng || Math.random;
@@ -312,6 +313,15 @@ class TableManager extends EventEmitter {
       this.config.startBb = bb;
       this.config.levelDurationMinutes = levelDurationMinutes;
       this.config.bbAnte = bbAnte;
+    }
+    // 블라인드 상승 주기(레벨당 지속시간)는 게임이 이미 진행 중이어도 바꿀 수 있다(시작
+    // 블라인드 액수/BB 앤티는 로비에서만 변경 가능한 것과 다름). 지금 몇 레벨인지는 그대로
+    // 유지한 채, 그 순간부터 새 주기로 다시 카운트다운을 시작한다(BlindStructure에서 처리).
+    if ('levelDurationMinutes' in applied && this.status === 'in_progress') {
+      const levelDurationMinutes = Math.max(0, Number(applied.levelDurationMinutes) || 0);
+      this.blinds.setLevelDurationMinutes(levelDurationMinutes);
+      this.config.levelDurationMinutes = levelDurationMinutes;
+      this._applyBlindLevel(); // 다음 핸드까지 기다리지 않고 즉시 새 레벨 정보를 반영/브로드캐스트
     }
     if ('aiMistakeRate' in applied) {
       this.config.aiMistakeRate = Math.max(0, Math.min(0.4, Number(applied.aiMistakeRate)));

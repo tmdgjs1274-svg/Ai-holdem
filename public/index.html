@@ -44,7 +44,7 @@
         <input id="create-startingStack" type="number" value="20000" min="100" step="100" />
       </label>
       <label>리바인 칩
-        <input id="create-rebuyAmount" type="number" value="20000" min="100" step="100" />
+        <input id="create-rebuyAmount" type="number" value="30000" min="100" step="100" />
       </label>
     </div>
 
@@ -59,7 +59,7 @@
 
     <div class="grid2">
       <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
-        <input id="create-maxRebuys" type="number" value="0" min="0" max="999" />
+        <input id="create-maxRebuys" type="number" value="1" min="0" max="999" />
       </label>
       <label>애드온 칩 (0=사용안함)
         <input id="create-addOnAmount" type="number" value="0" min="0" step="100" />
@@ -68,16 +68,16 @@
 
     <div class="grid2">
       <label>블라인드 상승 주기 (분, 0=고정)
-        <input id="create-levelMinutes" type="number" value="15" min="0" max="180" />
+        <input id="create-levelMinutes" type="number" value="5" min="0" max="180" />
       </label>
       <label>AI 액션 텀 (초)
-        <input id="create-aiActionDelay" type="number" value="5" min="0" max="15" step="0.5" />
+        <input id="create-aiActionDelay" type="number" value="1.5" min="0" max="15" step="0.5" />
       </label>
     </div>
 
     <label class="checkbox-label">
       <input id="create-bbAnte" type="checkbox" checked />
-      BB 앤티 사용 (버튼이 그 레벨 빅블라인드만큼 혼자 냄)
+      BB 앤티 사용 (빅블라인드가 그 레벨 빅블라인드만큼 추가로 혼자 냄)
     </label>
 
     <div class="row-buttons">
@@ -224,12 +224,12 @@
         <input id="set-startBb" type="number" min="2" step="100" />
       </label>
     </div>
-    <label data-lobby-only>블라인드 상승 주기 (분, 0=고정)
+    <label>블라인드 상승 주기 (분, 0=고정) — 게임 중에도 변경 가능
       <input id="set-levelMinutes" type="number" min="0" max="180" />
     </label>
     <label class="checkbox-label" data-lobby-only>
       <input id="set-bbAnte" type="checkbox" />
-      BB 앤티 사용 (버튼이 그 레벨 빅블라인드만큼 혼자 냄)
+      BB 앤티 사용 (빅블라인드가 그 레벨 빅블라인드만큼 추가로 혼자 냄)
     </label>
 
     <div class="grid2">
@@ -254,6 +254,11 @@
     <label>AI 실력 (<span id="set-aiSkill-label">75</span>%, 낮을수록 판단이 부정확해짐)
       <input id="set-aiSkill" type="range" min="0" max="100" step="5" value="75" />
     </label>
+
+    <div class="row-buttons">
+      <button id="btn-test-voice" type="button" class="btn tiny ghost">🔊 소리 테스트</button>
+    </div>
+    <p class="hint">액션 음성 안내가 안 들리면 눌러서 확인해보세요. 여기서도 안 들리면 기기의 미디어 볼륨이나 브라우저/OS의 음성 합성(TTS) 설정 문제일 수 있어요.</p>
 
     <div class="row-buttons">
       <button id="btn-settings-save" class="btn primary">저장</button>
