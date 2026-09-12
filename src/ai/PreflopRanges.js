@@ -71,13 +71,19 @@ function sizePreflopRaise(engine, legal, ctx) {
 
 /**
  * 프리플랍 액션 결정. 반환: { actionType, amount? }
+ *
+ * postflop과 마찬가지로 skillLevel(항상 적용되는 판단 잡음)과 mistakeRate(드문 큰 실수)를
+ * 독립된 축으로 적용한다. skillLevel이 낮을수록 손패 강도 평가 자체가 흔들려서, 오픈/콜/폴드
+ * 경계선에서 잘못된 선택을 더 자주 하게 된다.
  */
 function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const rng = opts.rng || Math.random;
   const mistakeRate = opts.mistakeRate != null ? opts.mistakeRate : 0.08;
+  const skill = Math.max(0, Math.min(100, opts.skillLevel != null ? opts.skillLevel : 75));
   const ctx = buildPreflopContext(engine, seatIndex);
   let score = ctx.score;
   if (rng() < mistakeRate) score += (rng() - 0.5) * 4; // 사람같은 실수: 핸드 강도 인식 오차
+  score += (rng() - 0.5) * (1 - skill / 100) * 3; // 실력이 낮을수록 항상 섞이는 잔잡음
 
   // raiseLevel===0: 아직 아무도 빅블라인드 이상으로 레이즈하지 않은 "오픈되지 않은" 팟.
   // (BB를 완성하기 위해 콜해야 하는 금액이 있어도 이는 "실제 레이즈에 대응"이 아니라 "오픈 여부 결정"임)

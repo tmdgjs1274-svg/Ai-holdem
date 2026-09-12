@@ -21,12 +21,12 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
   'aiCount', 'startingStack', 'rebuyAmount', 'startSb', 'startBb',
-  'levelDurationMinutes', 'aiAutoRebuy', 'aiMistakeRate', 'aiActionDelayMs',
+  'levelDurationMinutes', 'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
-  'aiMistakeRate', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
-  'aiAutoRebuy', 'interHandDelayMs',
+  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
+  'interHandDelayMs',
 ]);
 
 // 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
@@ -49,11 +49,11 @@ class TableManager extends EventEmitter {
    * @param {number} [config.startSb] 기본 100
    * @param {number} [config.startBb] 기본 200
    * @param {number} [config.levelDurationMinutes] 0이면 블라인드 고정
-   * @param {boolean} [config.aiAutoRebuy] 기본 true
-   * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08
+   * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
+   * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
    * @param {number} [config.aiActionDelayMs] AI 액션 사이 텀, 기본 5000
-   * @param {number} [config.maxRebuys] 0=무제한, 기본 0
+   * @param {number} [config.maxRebuys] 최대 리바인 횟수. 0=리바인 불가, 기본 0
    * @param {number} [config.addOnAmount] 0=비활성화, 기본 0
    */
   constructor(config) {
@@ -64,10 +64,12 @@ class TableManager extends EventEmitter {
     this.config = {
       startingStack: config.startingStack || 20000,
       rebuyAmount: config.rebuyAmount || config.startingStack || 20000,
-      aiAutoRebuy: config.aiAutoRebuy !== false,
       aiMistakeRate: config.aiMistakeRate != null ? config.aiMistakeRate : 0.08,
+      aiSkillLevel: config.aiSkillLevel != null ? Math.max(0, Math.min(100, config.aiSkillLevel)) : 75,
       interHandDelayMs: config.interHandDelayMs != null ? config.interHandDelayMs : 5000,
       aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 5000,
+      // 0이면 리바인이 아예 불가능함을 의미한다(과거에는 0=무제한이었으나, 사람이 리바인을
+      // 명시적으로 통제할 수 있도록 "무제한" 개념 자체를 없앴다).
       maxRebuys: config.maxRebuys != null ? config.maxRebuys : 0,
       addOnAmount: config.addOnAmount != null ? config.addOnAmount : 0,
       // 올인 쇼다운에서 보드 카드를 한 장씩 공개할 때 카드 사이에 두는 텀(ms). 기본 900
@@ -100,6 +102,11 @@ class TableManager extends EventEmitter {
     this._handTimer = null;
     this._nextHandFallbackTimer = null;
     this._aiLoopActive = false;
+    // 재접속 시 놓친 "한 번뿐인" 이벤트(handResult/awaitNextHand/rebuyRequired)를 다시 보내주기 위한 상태
+    this._lastHandResult = null;
+    this._awaitingConfirmInfo = null; // { humanSeats } - 다음 핸드 준비 확인을 기다리는 중이면 설정됨
+    // 파산한 AI가 있어서(사람이 아직 리바인을 결정하지 않아) 다음 핸드를 시작할 수 없는 상태
+    this._awaitingAiRebuy = false;
 
     // 호스트 착석 (seat 0)
     this._seatHuman(0, config.hostId, config.hostName || '호스트');
@@ -278,9 +285,11 @@ class TableManager extends EventEmitter {
       this.blinds.levelDurationMinutes = Math.max(0, Number(applied.levelDurationMinutes) || 0);
       this.config.levelDurationMinutes = this.blinds.levelDurationMinutes;
     }
-    if ('aiAutoRebuy' in applied) this.config.aiAutoRebuy = !!applied.aiAutoRebuy;
     if ('aiMistakeRate' in applied) {
       this.config.aiMistakeRate = Math.max(0, Math.min(0.4, Number(applied.aiMistakeRate)));
+    }
+    if ('aiSkillLevel' in applied) {
+      this.config.aiSkillLevel = Math.max(0, Math.min(100, Number(applied.aiSkillLevel)));
     }
     if ('aiActionDelayMs' in applied) {
       this.config.aiActionDelayMs = Math.max(0, Math.min(15000, Number(applied.aiActionDelayMs)));
@@ -335,11 +344,23 @@ class TableManager extends EventEmitter {
     this._applyBlindLevel();
 
     if (!this.engine.canStartHand()) {
-      // 인간이 아무도 없거나(모두 나감) 혹은 참가자가 1명 이하 -> 종료
-      this._closeRoom('참가자 부족으로 게임이 종료되었습니다');
+      if (this.engine.occupiedSeats().length < 2) {
+        // 실제로 참가자가 부족함(사람이 나가는 등) -> 게임 종료
+        this._closeRoom('참가자 부족으로 게임이 종료되었습니다');
+      } else {
+        // 좌석은 남아있지만(예: 파산한 AI가 아직 리바인되지 않음) 핸드를 시작할 조건이 안 되는 경우.
+        // 방을 닫지 않고, 사람이 해당 AI를 수동으로 리바인시킬 때까지 대기한다.
+        this._awaitingAiRebuy = true;
+        this.emit('waitingForAiRebuy', {
+          seats: this.engine.seats.filter((s) => s && s.isSittingOut).map((s) => s.seatIndex),
+        });
+      }
       return;
     }
 
+    this._awaitingAiRebuy = false;
+    this._lastHandResult = null;
+    this._awaitingConfirmInfo = null;
     this.engine.startHand();
     this._broadcastState();
     this._runAiLoop();
@@ -383,7 +404,10 @@ class TableManager extends EventEmitter {
       return; // 인간 차례 -> 클라이언트 액션 대기
     }
 
-    const decision = decideAction(this.engine, seat.seatIndex, { mistakeRate: this.config.aiMistakeRate });
+    const decision = decideAction(this.engine, seat.seatIndex, {
+      mistakeRate: this.config.aiMistakeRate,
+      skillLevel: this.config.aiSkillLevel,
+    });
     // 사람이 이번 핸드에서 이미 전부 죽었다면(폴드/미참여) AI끼리만 남은 상황이므로
     // 굳이 텀을 두지 않고 빠르게 진행한다 (아무도 지켜볼 필요가 없는 AI vs AI 액션)
     const delay = this._humanStillInHand() ? Math.max(0, this.config.aiActionDelayMs || 0) : 0;
@@ -479,25 +503,22 @@ class TableManager extends EventEmitter {
     this.readyForNext.clear();
 
     const requiresConfirm = this._wasAnyHumanDealtThisHand();
-    this.emit('handResult', { ...this.engine.lastHandResult, requiresConfirm });
+    this._lastHandResult = { ...this.engine.lastHandResult, requiresConfirm };
+    this.emit('handResult', this._lastHandResult);
 
     // 파산자 처리
     const busted = this.engine.occupiedSeats().filter((s) => s.stack <= 0);
     let needsPause = false;
     for (const seat of busted) {
       if (seat.type === 'ai') {
-        const used = this.rebuyCounts[seat.seatIndex] || 0;
-        if (this.config.aiAutoRebuy && !(this.config.maxRebuys > 0 && used >= this.config.maxRebuys)) {
-          this.rebuyCounts[seat.seatIndex] = used + 1;
-          seat.stack = this.config.rebuyAmount;
-          this.emit('aiRebuy', { seatIndex: seat.seatIndex, stack: seat.stack, rebuysUsed: this.rebuyCounts[seat.seatIndex] });
-        } else {
-          seat.isSittingOut = true;
-        }
+        // AI는 더 이상 자동으로 리바인되지 않는다. 비활성화(sitting-out) 상태로 두고,
+        // 사람이 좌석을 클릭해 리바인 여부를 직접 결정할 때까지 기다린다(handleAiRebuyDecision).
+        seat.isSittingOut = true;
       } else {
         const used = this.rebuyCounts[seat.seatIndex] || 0;
-        if (this.config.maxRebuys > 0 && used >= this.config.maxRebuys) {
-          // 최대 리바인 횟수 초과 -> 리바인 거부와 동일하게 처리
+        // maxRebuys=0은 "리바인 불가"를 의미한다(과거의 "무제한" 개념은 제거됨).
+        if (used >= this.config.maxRebuys) {
+          // 최대 리바인 횟수 초과(또는 애초에 리바인이 불가능함) -> 리바인 거부와 동일하게 처리
           this._leaveOnBust(seat.seatIndex, seat.playerId, 'maxRebuysReached');
         } else {
           this.pendingRebuy.add(seat.seatIndex);
@@ -551,6 +572,7 @@ class TableManager extends EventEmitter {
     }
 
     clearTimeout(this._handTimer);
+    this._awaitingConfirmInfo = { humanSeats };
     this.emit('awaitNextHand', { humanSeats, readySeats: [...this.readyForNext] });
     clearTimeout(this._nextHandFallbackTimer);
     // 응답 없는(자리 비움) 플레이어 때문에 게임이 영원히 멈추지 않도록 하는 안전장치
@@ -629,6 +651,38 @@ class TableManager extends EventEmitter {
     }
   }
 
+  // 파산해서 비활성화(sitting-out)된 AI 좌석을, 사람이 직접 클릭해 리바인시킬지 결정하게 하는 메서드.
+  // AI는 더 이상 자동으로 리바인되지 않으므로, 이 메서드가 유일한 리바인 경로다.
+  // playerId는 이 방에 앉아있는 사람이면 누구든(호스트/게스트 모두) 결정할 수 있다.
+  handleAiRebuyDecision(playerId, seatIndex, accept) {
+    if (this.status !== 'in_progress') throw new Error('게임 진행 중에만 가능합니다');
+    if (this.seatByPlayer[playerId] == null) throw new Error('참가자를 찾을 수 없습니다');
+    const seat = this.engine.seats[seatIndex];
+    if (!seat || seat.type !== 'ai') throw new Error('AI 좌석이 아닙니다');
+    if (seat.stack > 0 || !seat.isSittingOut) throw new Error('리바인이 필요한 상태가 아닙니다');
+
+    if (!accept) return { seatIndex, accepted: false };
+
+    const used = this.rebuyCounts[seatIndex] || 0;
+    if (used >= this.config.maxRebuys) throw new Error('이 AI는 더 이상 리바인할 수 없습니다(최대 리바인 횟수 도달)');
+
+    // 리바인된 스택 값은 여기서 미리 붙잡아둔다: 아래에서 다음 핸드가 곧바로(동기적으로) 재개될
+    // 수 있고, 그러면 블라인드 포스팅으로 seat.stack이 바로 줄어들어 "방금 리바인된 금액"과
+    // 달라져 버리기 때문에, 리바인 이벤트/반환값은 항상 실제로 지급된 금액을 그대로 보여줘야 한다.
+    const newStack = this.config.rebuyAmount;
+    this.rebuyCounts[seatIndex] = used + 1;
+    seat.stack = newStack;
+    seat.isSittingOut = false;
+    this.emit('aiRebuy', { seatIndex, stack: newStack, rebuysUsed: this.rebuyCounts[seatIndex] });
+    this._broadcastState();
+
+    if (this._awaitingAiRebuy) {
+      this._awaitingAiRebuy = false;
+      this._playNextHand();
+    }
+    return { seatIndex, accepted: true, stack: newStack };
+  }
+
   _closeRoom(reason) {
     this.status = 'closed';
     clearTimeout(this._handTimer);
@@ -637,6 +691,7 @@ class TableManager extends EventEmitter {
     clearTimeout(this._nextHandFallbackTimer);
     clearTimeout(this._boardRevealTimer);
     this._aiLoopActive = false;
+    this._awaitingAiRebuy = false;
     this.emit('roomClosed', { reason });
   }
 
@@ -663,6 +718,12 @@ class TableManager extends EventEmitter {
   // 상태(전체 보드)까지 가 있지만 클라이언트에는 그중 일부만 보여주기 위한 용도.
   getPublicState(forPlayerId = null, boardOverride = null) {
     const forSeat = forPlayerId != null ? this.seatByPlayer[forPlayerId] : null;
+    const engineState = this.engine.getPublicState(forSeat);
+    // 각 좌석에 (인간/AI 공통으로) 지금까지 사용한 리바인 횟수를 함께 내려준다.
+    // AI 리바인 확인 팝업 등에서 "N/M회 사용" 표시를 하려면 클라이언트가 이 값을 알아야 한다.
+    if (engineState.seats) {
+      engineState.seats = engineState.seats.map((s) => (s ? { ...s, rebuysUsed: this.rebuyCounts[s.seatIndex] || 0 } : null));
+    }
     const base = {
       roomId: this.roomId,
       status: this.status,
@@ -673,13 +734,42 @@ class TableManager extends EventEmitter {
       hostId: this.hostId,
       addOnAvailable:
         this.config.addOnAmount > 0 && forSeat != null && !this.addOnUsed.has(forSeat) && this.status === 'in_progress',
-      ...this.engine.getPublicState(forSeat),
+      ...engineState,
     };
     if (boardOverride) base.board = boardOverride;
     if (forSeat != null && this.engine.actingSeat === forSeat) {
       base.legalActions = this.engine.getLegalActions(forSeat);
     }
     return base;
+  }
+
+  // 재접속한 소켓에게, 접속이 끊긴 사이에 놓쳤을 수 있는 "한 번뿐인" 이벤트를 다시 보내주기 위한
+  // 정보를 계산한다. 모바일에서 화면 잠금/백그라운드 전환 등으로 소켓이 잠깐 끊겼다가 재연결되면,
+  // 일반 'state' 브로드캐스트만으로는 결과 모달/리바인 확인/다음 핸드 대기 UI를 복구할 수 없어서
+  // 게임이 멈춘 것처럼 보이는 문제가 있었다. rejoinRoom 처리 시 이 값을 함께 재전송한다.
+  getReconnectExtras(playerId) {
+    const seatIdx = this.seatByPlayer[playerId];
+    if (seatIdx == null) return null;
+    const extras = {};
+
+    if (this._lastHandResult && this.status === 'in_progress') {
+      extras.handResult = this._lastHandResult;
+    }
+    if (this.pendingRebuy.has(seatIdx)) {
+      extras.rebuyRequired = {
+        seatIndex: seatIdx,
+        playerId,
+        rebuysUsed: this.rebuyCounts[seatIdx] || 0,
+        maxRebuys: this.config.maxRebuys,
+      };
+    } else if (
+      this._awaitingConfirmInfo &&
+      this._awaitingConfirmInfo.humanSeats.includes(seatIdx) &&
+      !this.readyForNext.has(seatIdx)
+    ) {
+      extras.awaitNextHand = { humanSeats: this._awaitingConfirmInfo.humanSeats, readySeats: [...this.readyForNext] };
+    }
+    return extras;
   }
 }
 

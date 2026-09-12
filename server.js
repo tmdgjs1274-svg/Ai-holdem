@@ -62,10 +62,10 @@ function attachTableEvents(table) {
     io.to(table.roomId).emit('playerLeft', payload);
     broadcastLobby(table);
   });
-  table.on('rebuyRequired', ({ seatIndex, playerId }) => {
-    io.to(table.roomId).emit('rebuyRequired', { seatIndex });
-    const targetSocketId = findSocketByPlayer(table.roomId, playerId);
-    if (targetSocketId) io.to(targetSocketId).emit('yourRebuyDecision', { seatIndex });
+  table.on('rebuyRequired', (payload) => {
+    io.to(table.roomId).emit('rebuyRequired', payload);
+    const targetSocketId = findSocketByPlayer(table.roomId, payload.playerId);
+    if (targetSocketId) io.to(targetSocketId).emit('yourRebuyDecision', { seatIndex: payload.seatIndex });
   });
   table.on('rebuyResult', (payload) => io.to(table.roomId).emit('rebuyResult', payload));
   table.on('aiRebuy', (payload) => io.to(table.roomId).emit('aiRebuy', payload));
@@ -106,8 +106,8 @@ io.on('connection', (socket) => {
         startSb: clampInt(opts && opts.startSb, 1, 100000, 100),
         startBb: clampInt(opts && opts.startBb, 2, 200000, 200),
         levelDurationMinutes: clampInt(opts && opts.levelDurationMinutes, 0, 180, 15),
-        aiAutoRebuy: opts ? opts.aiAutoRebuy !== false : true,
         aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
+        aiSkillLevel: clampInt(opts && opts.aiSkillLevel, 0, 100, 75),
         aiActionDelayMs: clampInt(opts && opts.aiActionDelayMs, 0, 15000, 5000),
         maxRebuys: clampInt(opts && opts.maxRebuys, 0, 999, 0),
         addOnAmount: clampInt(opts && opts.addOnAmount, 0, 10000000, 0),
@@ -151,6 +151,15 @@ io.on('connection', (socket) => {
       socketMeta.set(socket.id, { roomId: table.roomId, playerId });
       cb && cb({ ok: true, roomId: table.roomId, playerId, seatIndex, lobby: table.getLobbyState() });
       broadcastState(table);
+      // 접속이 끊긴 사이 놓쳤을 수 있는 "한 번뿐인" 이벤트(핸드 결과 / 리바인 요청 / 다음 핸드 대기)를
+      // 재접속한 이 소켓에게만 다시 보내준다. 이게 없으면 결과 확인 화면을 놓친 채로 재접속했을 때
+      // 클라이언트가 그 상태를 복구할 방법이 없어 게임이 멈춘 것처럼 보이는 문제가 있었다.
+      const extras = table.getReconnectExtras(playerId);
+      if (extras) {
+        if (extras.handResult) socket.emit('handResult', extras.handResult);
+        if (extras.rebuyRequired) socket.emit('rebuyRequired', extras.rebuyRequired);
+        if (extras.awaitNextHand) socket.emit('awaitNextHand', extras.awaitNextHand);
+      }
     } catch (err) {
       cb && cb({ ok: false, error: err.message });
     }
@@ -175,6 +184,13 @@ io.on('connection', (socket) => {
     withTable(socket, cb, (table, meta) => {
       table.handleRebuyDecision(meta.playerId, !!accept);
       cb && cb({ ok: true });
+    });
+  });
+
+  socket.on('aiRebuyDecision', ({ seatIndex, accept }, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      const result = table.handleAiRebuyDecision(meta.playerId, seatIndex, !!accept);
+      cb && cb({ ok: true, result });
     });
   });
 

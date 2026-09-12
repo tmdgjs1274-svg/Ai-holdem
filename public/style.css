@@ -193,6 +193,18 @@ input[type=range] { width: 100%; }
   pointer-events: none;
 }
 
+/* 파산해서 비활성화된 AI 좌석: 클릭하면 사람이 직접 리바인 여부를 결정할 수 있다는 걸
+   보여주기 위해 폴드와는 다른 색(파란 계열)의 스탬프 + 클릭 가능한 커서를 준다. */
+.seat.busted-ai { cursor: pointer; }
+.seat.busted-ai .fold-stamp {
+  background: #2c5aa0; border-color: rgba(255,255,255,0.6);
+  animation: bustedPulse 1.6s ease-in-out infinite;
+}
+@keyframes bustedPulse {
+  0%, 100% { box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
+  50% { box-shadow: 0 2px 14px rgba(70,130,220,0.8); }
+}
+
 /* AI/사람 액션 발생 시 눈에 띄는 말풍선 */
 .seat .action-bubble {
   position: absolute; top: -36px; left: 50%; transform: translateX(-50%);
@@ -209,12 +221,22 @@ input[type=range] { width: 100%; }
 }
 
 .action-bar { padding: 10px; background: #0e2e20; border-top: 1px solid #2a6b48; flex-shrink: 0; }
-.raise-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.raise-controls input[type=range] { flex: 1; }
-.raise-controls .step-btn { width: auto; padding: 8px 12px; font-size: 15px; font-weight: 800; }
-.raise-amount-input {
-  width: 88px; flex-shrink: 0; text-align: right; font-weight: 700; color: #e2b93b;
-  background: #0e2e20; border: 1px solid #2a6b48; border-radius: 8px; padding: 8px 8px; font-size: 14px;
+/* 베팅 슬라이더와 -/입력/+ 를 두 줄로 나눠서, 좁은 휴대폰 화면에서도 각 요소가 너비를 보장받게 함.
+   (이전에는 한 줄에 -버튼/슬라이더/+버튼/직접입력을 전부 욱여넣었는데, 전역 input[type=number]
+   규칙이 더 높은 우선순위로 .raise-amount-input의 고정폭을 덮어써서 입력칸이 제멋대로 늘어나며
+   슬라이더를 거의 안 보이게 짓누르는 문제가 있었다. 두 줄로 나누고 입력칸을 flex:1로 두면
+   화면 폭이 얼마든 항상 남는 공간만큼만 차지하므로 더 이상 그런 붕괴가 생기지 않는다.) */
+.raise-controls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.raise-controls input[type=range] { width: 100%; }
+.raise-stepper-row { display: flex; align-items: stretch; gap: 8px; }
+.raise-controls .step-btn { width: auto; flex-shrink: 0; padding: 8px 16px; font-size: 16px; font-weight: 800; }
+/* input.raise-amount-input(타입+클래스, 우선순위 0,1,1)로 전역 input[type=number] 규칙(0,1,1)과
+   우선순위를 맞추고, 스타일시트 상 더 뒤에 오므로 이 규칙이 이긴다. flex:1 + min-width:0으로
+   버튼 두 개 사이 남는 공간만 차지하게 해서 고정폭(width:88px)이었을 때와 달리 화면이 아무리
+   좁아도 넘치지 않는다. */
+input.raise-amount-input {
+  flex: 1; min-width: 0; width: auto; text-align: center; font-weight: 700; color: #e2b93b;
+  background: #0e2e20; border: 1px solid #2a6b48; border-radius: 8px; padding: 8px 8px; font-size: 15px;
 }
 .raise-amount-input:disabled { opacity: 0.4; }
 .action-buttons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }

@@ -35,6 +35,10 @@
       </label>
     </div>
 
+    <label>AI 실력 (<span id="ai-skill-label">75</span>%, 낮을수록 판단이 부정확해짐)
+      <input id="create-aiSkill" type="range" min="0" max="100" step="5" value="75" />
+    </label>
+
     <div class="grid2">
       <label>시작 칩
         <input id="create-startingStack" type="number" value="20000" min="100" step="100" />
@@ -54,7 +58,7 @@
     </div>
 
     <div class="grid2">
-      <label>최대 리바인 횟수 (나·AI 공통, 0=무제한)
+      <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
         <input id="create-maxRebuys" type="number" value="0" min="0" max="999" />
       </label>
       <label>애드온 칩 (0=사용안함)
@@ -137,10 +141,12 @@
 
   <div id="action-bar" class="action-bar hidden">
     <div class="raise-controls">
-      <button id="btn-raise-minus" type="button" class="btn tiny ghost step-btn">－</button>
       <input id="raise-slider" type="range" min="0" max="0" value="0" step="100" />
-      <button id="btn-raise-plus" type="button" class="btn tiny ghost step-btn">＋</button>
-      <input id="raise-amount-input" type="number" step="100" class="raise-amount-input" />
+      <div class="raise-stepper-row">
+        <button id="btn-raise-minus" type="button" class="btn tiny ghost step-btn">－</button>
+        <input id="raise-amount-input" type="number" step="100" class="raise-amount-input" />
+        <button id="btn-raise-plus" type="button" class="btn tiny ghost step-btn">＋</button>
+      </div>
     </div>
     <div class="action-buttons">
       <button id="btn-fold" class="btn danger">폴드</button>
@@ -180,6 +186,18 @@
   </div>
 </div>
 
+<!-- AI 리바인 확인 모달: 파산해서 비활성화된 AI 좌석을 클릭했을 때 뜸 -->
+<div id="ai-rebuy-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>AI 리바인</h3>
+    <p id="ai-rebuy-msg"></p>
+    <div class="row-buttons">
+      <button id="btn-ai-rebuy-yes" class="btn primary">리바인시키기</button>
+      <button id="btn-ai-rebuy-no" class="btn ghost">닫기</button>
+    </div>
+  </div>
+</div>
+
 <!-- 설정 모달 (로비: 전체 항목 / 게임 중: 일부 항목만) -->
 <div id="settings-modal" class="modal hidden">
   <div class="modal-box wide">
@@ -209,7 +227,7 @@
       <label>리바인 칩
         <input id="set-rebuyAmount" type="number" min="100" step="100" />
       </label>
-      <label>최대 리바인 횟수 (나·AI 공통, 0=무제한)
+      <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
         <input id="set-maxRebuys" type="number" min="0" max="999" />
       </label>
     </div>
@@ -223,6 +241,9 @@
     </div>
     <label>AI 실수 빈도 (<span id="set-aiMistake-label">8</span>%)
       <input id="set-aiMistake" type="range" min="0" max="30" value="8" />
+    </label>
+    <label>AI 실력 (<span id="set-aiSkill-label">75</span>%, 낮을수록 판단이 부정확해짐)
+      <input id="set-aiSkill" type="range" min="0" max="100" step="5" value="75" />
     </label>
 
     <div class="row-buttons">

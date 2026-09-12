@@ -53,8 +53,10 @@ el('btn-go-join').addEventListener('click', () => showScreen('screen-join'));
 
 el('create-aiCount').addEventListener('input', (e) => (el('ai-count-label').textContent = e.target.value));
 el('create-aiMistake').addEventListener('input', (e) => (el('ai-mistake-label').textContent = e.target.value));
+el('create-aiSkill').addEventListener('input', (e) => (el('ai-skill-label').textContent = e.target.value));
 el('set-aiCount').addEventListener('input', (e) => (el('set-aiCount-label').textContent = e.target.value));
 el('set-aiMistake').addEventListener('input', (e) => (el('set-aiMistake-label').textContent = e.target.value));
+el('set-aiSkill').addEventListener('input', (e) => (el('set-aiSkill-label').textContent = e.target.value));
 
 function toast(msg) {
   const t = el('toast');
@@ -83,6 +85,7 @@ el('btn-create-submit').addEventListener('click', () => {
     hostName: el('create-name').value.trim() || '호스트',
     aiCount: Number(el('create-aiCount').value),
     aiMistakeRate: Number(el('create-aiMistake').value) / 100,
+    aiSkillLevel: Number(el('create-aiSkill').value),
     startingStack: Number(el('create-startingStack').value),
     rebuyAmount: Number(el('create-rebuyAmount').value),
     startSb: Number(el('create-sb').value),
@@ -189,6 +192,8 @@ function openSettingsModal() {
   el('set-aiActionDelay').value = Math.round((cfg.aiActionDelayMs / 1000) * 10) / 10;
   el('set-aiMistake').value = Math.round(cfg.aiMistakeRate * 100);
   el('set-aiMistake-label').textContent = Math.round(cfg.aiMistakeRate * 100);
+  el('set-aiSkill').value = cfg.aiSkillLevel;
+  el('set-aiSkill-label').textContent = cfg.aiSkillLevel;
 
   el('settings-modal').classList.remove('hidden');
 }
@@ -207,6 +212,7 @@ el('btn-settings-save').addEventListener('click', () => {
     addOnAmount: Number(el('set-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
     aiMistakeRate: Number(el('set-aiMistake').value) / 100,
+    aiSkillLevel: Number(el('set-aiSkill').value),
   };
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
@@ -321,6 +327,10 @@ socket.on('addOnUsed', ({ seatIndex, amount }) => {
   }
 });
 
+socket.on('aiRebuy', ({ seatIndex, stack }) => {
+  toast(`${seatDisplayName(seatIndex)}이(가) 리바인했어요 (칩 ${stack})`);
+});
+
 socket.on('playerAction', (record) => {
   showActionBubble(record);
 });
@@ -342,6 +352,36 @@ el('btn-rebuy-yes').addEventListener('click', () => {
 });
 el('btn-rebuy-no').addEventListener('click', () => {
   socket.emit('rebuyDecision', { accept: false }, () => {});
+});
+
+// ---------- AI 리바인 (사람이 직접 클릭해서 결정) ----------
+let pendingAiRebuySeat = null;
+
+function openAiRebuyConfirm(seatIndex) {
+  const s = latestState && latestState.seats && latestState.seats[seatIndex];
+  const cfg = currentConfig();
+  if (!s || !cfg) return;
+  const used = s.rebuysUsed || 0;
+  const canRebuy = used < cfg.maxRebuys;
+  pendingAiRebuySeat = seatIndex;
+  el('ai-rebuy-msg').textContent = canRebuy
+    ? `${s.displayName}이(가) 파산했습니다. 리바인시켜서 계속 플레이하게 할까요? (리바인 ${used}/${cfg.maxRebuys}회 사용, 리바인 시 칩 ${cfg.rebuyAmount})`
+    : `${s.displayName}은(는) 최대 리바인 횟수(${cfg.maxRebuys}회)를 모두 사용해 더 이상 리바인할 수 없습니다.`;
+  el('btn-ai-rebuy-yes').classList.toggle('hidden', !canRebuy);
+  el('ai-rebuy-modal').classList.remove('hidden');
+}
+
+el('btn-ai-rebuy-yes').addEventListener('click', () => {
+  if (pendingAiRebuySeat == null) return;
+  socket.emit('aiRebuyDecision', { seatIndex: pendingAiRebuySeat, accept: true }, (res) => {
+    if (!res.ok) toast(res.error || '리바인 실패');
+  });
+  el('ai-rebuy-modal').classList.add('hidden');
+  pendingAiRebuySeat = null;
+});
+el('btn-ai-rebuy-no').addEventListener('click', () => {
+  el('ai-rebuy-modal').classList.add('hidden');
+  pendingAiRebuySeat = null;
 });
 
 el('btn-back-home').addEventListener('click', () => {
@@ -445,9 +485,19 @@ function renderTable() {
     const x = 50 + 43 * Math.cos(rad);
     const y = 50 + 40 * Math.sin(rad);
 
+    // 파산해서 비활성화(sitting-out)된 AI 좌석: 더 이상 자동으로 리바인되지 않으므로,
+    // 사람이 직접 클릭해서 리바인 여부를 결정하게 한다.
+    const isBustedAi = s.type === 'ai' && s.isSittingOut && s.stack <= 0;
+
     const seatDiv = document.createElement('div');
-    seatDiv.className = 'seat' + (s.idx === state.actingSeat ? ' acting' : '') + (s.folded ? ' folded' : '');
+    seatDiv.className = 'seat'
+      + (s.idx === state.actingSeat ? ' acting' : '')
+      + (s.folded ? ' folded' : '')
+      + (isBustedAi ? ' busted-ai' : '');
     seatDiv.dataset.seat = s.idx;
+    if (isBustedAi) {
+      seatDiv.addEventListener('click', () => openAiRebuyConfirm(s.idx));
+    }
     seatDiv.style.left = x + '%';
     seatDiv.style.top = y + '%';
 
@@ -482,7 +532,7 @@ function renderTable() {
 
     const stampDiv = document.createElement('div');
     stampDiv.className = 'fold-stamp';
-    stampDiv.textContent = 'FOLD';
+    stampDiv.textContent = isBustedAi ? '탭해서 리바인' : 'FOLD';
     seatDiv.appendChild(stampDiv);
 
     const bubble = activeBubbles[s.idx];
@@ -662,6 +712,12 @@ function alignRaiseTo100(value, legal) {
 
 const POT_QUICK_PCTS = [0.3, 0.5, 0.7, 1.0, 1.5];
 
+// 슬라이더와 직접입력 칸의 값을 항상 같이 맞춰준다.
+function setRaiseAmount(v) {
+  el('raise-slider').value = v;
+  el('raise-amount-input').value = v;
+}
+
 function updateActionBar(state) {
   const bar = el('action-bar');
   const legal = state.legalActions;
@@ -677,8 +733,11 @@ function updateActionBar(state) {
   el('btn-raise').style.display = legal.canRaise ? 'block' : 'none';
 
   const slider = el('raise-slider');
+  const amountInput = el('raise-amount-input');
   const quickRow = el('quick-bet-row');
+  const potRaiseWrap = el('pot-raise-wrap');
   quickRow.innerHTML = '';
+  quickRow.classList.add('hidden');
 
   if (legal.canRaise) {
     const alignedMin = Math.ceil(legal.minRaiseTo / 100) * 100 <= legal.maxRaiseTo
@@ -686,12 +745,14 @@ function updateActionBar(state) {
       : legal.minRaiseTo;
     slider.min = alignedMin;
     slider.max = legal.maxRaiseTo;
-    slider.value = alignedMin;
-    el('raise-amount-label').textContent = alignedMin;
-    slider.oninput = () => (el('raise-amount-label').textContent = slider.value);
+    amountInput.min = alignedMin;
+    amountInput.max = legal.maxRaiseTo;
+    setRaiseAmount(alignedMin);
+    slider.disabled = false;
+    amountInput.disabled = false;
     slider.parentElement.style.display = 'flex';
 
-    // 플랍 이후에는 팟 비율 퀵버튼도 제공
+    // 플랍 이후에는 팟 비율 퀵버튼을 레이즈/올인 버튼 사이의 콤보로 제공
     if (state.street && state.street !== 'preflop') {
       POT_QUICK_PCTS.forEach((pct) => {
         const btn = document.createElement('button');
@@ -700,17 +761,20 @@ function updateActionBar(state) {
         btn.textContent = `팟 ${Math.round(pct * 100)}%`;
         btn.addEventListener('click', () => {
           const target = alignRaiseTo100(state.currentBet + state.pot * pct, legal);
+          quickRow.classList.add('hidden');
           sendAction('raise', target);
         });
         quickRow.appendChild(btn);
       });
-      quickRow.classList.remove('hidden');
+      potRaiseWrap.classList.remove('hidden');
     } else {
-      quickRow.classList.add('hidden');
+      potRaiseWrap.classList.add('hidden');
     }
   } else {
+    slider.disabled = true;
+    amountInput.disabled = true;
     slider.parentElement.style.display = 'none';
-    quickRow.classList.add('hidden');
+    potRaiseWrap.classList.add('hidden');
   }
 }
 
@@ -720,9 +784,48 @@ el('btn-call').addEventListener('click', () => sendAction('call'));
 el('btn-allin').addEventListener('click', () => sendAction('allin'));
 el('btn-raise').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
-  const raw = Number(el('raise-slider').value);
+  const raw = Number(el('raise-amount-input').value);
   const amount = legal ? alignRaiseTo100(raw, legal) : raw;
   sendAction('raise', amount);
+});
+
+// ---------- 베팅 금액 직접 조작: 슬라이더 <-> +/- 스테퍼 <-> 직접입력 3방향 동기화 ----------
+el('raise-slider').addEventListener('input', () => {
+  el('raise-amount-input').value = el('raise-slider').value;
+});
+el('btn-raise-minus').addEventListener('click', () => {
+  const legal = latestState && latestState.legalActions;
+  if (!legal) return;
+  const current = Number(el('raise-amount-input').value) || Number(el('raise-slider').value) || 0;
+  setRaiseAmount(alignRaiseTo100(current - 100, legal));
+});
+el('btn-raise-plus').addEventListener('click', () => {
+  const legal = latestState && latestState.legalActions;
+  if (!legal) return;
+  const current = Number(el('raise-amount-input').value) || Number(el('raise-slider').value) || 0;
+  setRaiseAmount(alignRaiseTo100(current + 100, legal));
+});
+el('raise-amount-input').addEventListener('input', () => {
+  // 타이핑 중에는 100단위 정렬을 강제하지 않고 슬라이더만 실시간으로 맞춰준다.
+  // (정렬은 change/blur 시점에만 적용해야 입력이 편함)
+  const v = Number(el('raise-amount-input').value);
+  if (!Number.isNaN(v)) el('raise-slider').value = v;
+});
+el('raise-amount-input').addEventListener('change', () => {
+  const legal = latestState && latestState.legalActions;
+  if (!legal) return;
+  const v = Number(el('raise-amount-input').value) || legal.minRaiseTo;
+  setRaiseAmount(alignRaiseTo100(v, legal));
+});
+
+// ---------- 팟레이즈 콤보 드롭다운: 토글 + 바깥 클릭 시 닫기 ----------
+el('btn-pot-raise').addEventListener('click', (e) => {
+  e.stopPropagation();
+  el('quick-bet-row').classList.toggle('hidden');
+});
+document.addEventListener('click', (e) => {
+  const wrap = el('pot-raise-wrap');
+  if (wrap && !wrap.contains(e.target)) el('quick-bet-row').classList.add('hidden');
 });
 
 function sendAction(actionType, amount) {
