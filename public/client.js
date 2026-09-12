@@ -3,11 +3,62 @@
 const socket = io();
 
 const el = (id) => document.getElementById(id);
+// 칩/금액 표시는 항상 천 단위 콤마를 넣어 보여준다 (입력 칸은 그대로 숫자만 받음)
+function fmt(n) {
+  return Number(n || 0).toLocaleString('ko-KR');
+}
 const SUIT_SYMBOL = { s: '♠', h: '♥', d: '♦', c: '♣' };
 const RED_SUITS = new Set(['h', 'd']);
 const ACTION_LABEL = {
   fold: '폴드', check: '체크', call: '콜', bet: '베팅', raise: '레이즈', allin: '올인',
 };
+
+// ---------- 액션 음성 안내 (체크/레이즈/폴드만, 중저음 남자 목소리 느낌) ----------
+// 브라우저 내장 Web Speech API를 사용하므로 별도 음원 파일이 필요 없지만,
+// 음색(성별) 자체를 강제로 고를 수는 없어서 "남성"류 이름의 한국어 음성을 우선 선택하고
+// 피치를 낮춰 중저음 느낌을 낸다 (브라우저/OS에 따라 결과가 다를 수 있음).
+const VOICE_ACTION_TEXT = { check: '체크', fold: '폴드', raise: '레이즈' };
+let cachedTtsVoice = null;
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => { cachedTtsVoice = null; };
+}
+function pickTtsVoice() {
+  if (cachedTtsVoice) return cachedTtsVoice;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices || !voices.length) return null;
+  const ko = voices.filter((v) => /^ko|kor/i.test(v.lang));
+  const pool = ko.length ? ko : voices;
+  const male = pool.find((v) => /male|남성|man\b/i.test(v.name) && !/female|여성/i.test(v.name));
+  cachedTtsVoice = male || pool[0] || voices[0];
+  return cachedTtsVoice;
+}
+// 테이블에 있는 사람들이 전부 폴드/아웃해서 이번 핸드가 AI끼리만 진행 중이면
+// 아무도 듣지 않으므로 음성 안내를 생략한다.
+function humanStillInHandNow() {
+  if (!latestState || !Array.isArray(latestState.seats)) return true;
+  return latestState.seats.some(
+    (s) => s && s.type !== 'ai' && Array.isArray(s.holeCards) && s.holeCards.length > 0 && !s.folded
+  );
+}
+function speakAction(record) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  const text = VOICE_ACTION_TEXT[record && record.actionType];
+  if (!text) return; // 체크/레이즈/폴드가 아니면 소리 없음
+  if (!humanStillInHandNow()) return; // 사람이 모두 죽고 AI끼리만 진행 중이면 생략
+  try {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ko-KR';
+    utter.pitch = 0.55; // 중저음 느낌을 위해 피치를 낮춤
+    utter.rate = 1.05;
+    const voice = pickTtsVoice();
+    if (voice) utter.voice = voice;
+    window.speechSynthesis.speak(utter);
+  } catch (e) {
+    // 음성 합성이 실패해도 게임 진행에는 영향이 없도록 무시
+  }
+}
 
 let myPlayerId = localStorage.getItem('holdem_playerId') || null;
 let myRoomId = localStorage.getItem('holdem_roomId') || null;
@@ -139,7 +190,7 @@ function renderLobby() {
       li.innerHTML = `<span>좌석 ${idx + 1} (비어있음${idx >= 1 ? ' · 참가 대기' : ''})</span><span class="tag empty">-</span>`;
     } else {
       const tagClass = s.type === 'ai' ? 'ai' : '';
-      li.innerHTML = `<span>${escapeHtml(s.displayName)} ${s.playerId === myPlayerId ? '(나)' : ''}</span><span class="tag ${tagClass}">${s.type === 'ai' ? 'AI' : '사람'} · ${s.stack}</span>`;
+      li.innerHTML = `<span>${escapeHtml(s.displayName)} ${s.playerId === myPlayerId ? '(나)' : ''}</span><span class="tag ${tagClass}">${s.type === 'ai' ? 'AI' : '사람'} · ${fmt(s.stack)}</span>`;
     }
     list.appendChild(li);
   });
@@ -327,16 +378,17 @@ socket.on('rebuyResult', ({ seatIndex }) => {
 
 socket.on('addOnUsed', ({ seatIndex, amount }) => {
   if (latestState && seatIndex === latestState.mySeatIndex) {
-    toast(`애드온으로 ${amount}칩을 받았어요`);
+    toast(`애드온으로 ${fmt(amount)}칩을 받았어요`);
   }
 });
 
 socket.on('aiRebuy', ({ seatIndex, stack }) => {
-  toast(`${seatDisplayName(seatIndex)}이(가) 리바인했어요 (칩 ${stack})`);
+  toast(`${seatDisplayName(seatIndex)}이(가) 리바인했어요 (칩 ${fmt(stack)})`);
 });
 
 socket.on('playerAction', (record) => {
   showActionBubble(record);
+  speakAction(record);
 });
 
 socket.on('playerLeft', ({ seatIndex }) => {
@@ -369,7 +421,7 @@ function openAiRebuyConfirm(seatIndex) {
   const canRebuy = used < cfg.maxRebuys;
   pendingAiRebuySeat = seatIndex;
   el('ai-rebuy-msg').textContent = canRebuy
-    ? `${s.displayName}이(가) 파산했습니다. 리바인시켜서 계속 플레이하게 할까요? (리바인 ${used}/${cfg.maxRebuys}회 사용, 리바인 시 칩 ${cfg.rebuyAmount})`
+    ? `${s.displayName}이(가) 파산했습니다. 리바인시켜서 계속 플레이하게 할까요? (리바인 ${used}/${cfg.maxRebuys}회 사용, 리바인 시 칩 ${fmt(cfg.rebuyAmount)})`
     : `${s.displayName}은(는) 최대 리바인 횟수(${cfg.maxRebuys}회)를 모두 사용해 더 이상 리바인할 수 없습니다.`;
   el('btn-ai-rebuy-yes').classList.toggle('hidden', !canRebuy);
   el('ai-rebuy-modal').classList.remove('hidden');
@@ -415,8 +467,8 @@ el('btn-leave').addEventListener('click', () => {
 function renderBlindInfo() {
   const level = blindTickBase ? blindTickBase.level : latestState && latestState.blindLevel;
   if (!level) return;
-  let text = `블라인드 ${level.sb}/${level.bb}`;
-  if (level.ante > 0) text += ` (BB 앤티 ${level.ante})`;
+  let text = `블라인드 ${fmt(level.sb)}/${fmt(level.bb)}`;
+  if (level.ante > 0) text += ` (BB 앤티 ${fmt(level.ante)})`;
   if (level.msRemaining != null && !level.isFinalLevel) {
     const elapsed = blindTickBase ? Date.now() - blindTickBase.receivedAt : 0;
     const remaining = Math.max(0, level.msRemaining - elapsed);
@@ -456,7 +508,7 @@ function renderTable() {
 
   lastRenderedHandNumber = state.handNumber;
   renderBlindInfo();
-  el('pot-display').textContent = state.pot ? `팟 ${state.pot}` : '';
+  el('pot-display').textContent = state.pot ? `팟 ${fmt(state.pot)}` : '';
 
   const board = el('board-cards');
   board.innerHTML = '';
@@ -493,12 +545,16 @@ function renderTable() {
     // 파산해서 비활성화(sitting-out)된 AI 좌석: 더 이상 자동으로 리바인되지 않으므로,
     // 사람이 직접 클릭해서 리바인 여부를 결정하게 한다.
     const isBustedAi = s.type === 'ai' && s.isSittingOut && s.stack <= 0;
+    // 아웃된(sitting-out) 좌석인데 위의 "탭해서 리바인" 케이스가 아닌 경우
+    // (예: 사람이 파산해서 본인이 리바인 여부를 결정 중인 동안, 다른 사람 화면에 보이는 좌석)
+    const isOtherSittingOut = !isBustedAi && s.isSittingOut;
 
     const seatDiv = document.createElement('div');
     seatDiv.className = 'seat'
       + (s.idx === state.actingSeat ? ' acting' : '')
       + (s.folded ? ' folded' : '')
-      + (isBustedAi ? ' busted-ai' : '');
+      + (isBustedAi ? ' busted-ai' : '')
+      + (isOtherSittingOut ? ' sitting-out' : '');
     seatDiv.dataset.seat = s.idx;
     if (isBustedAi) {
       seatDiv.addEventListener('click', () => openAiRebuyConfirm(s.idx));
@@ -525,19 +581,26 @@ function renderTable() {
 
     const stackDiv = document.createElement('div');
     stackDiv.className = 'stack';
-    stackDiv.textContent = `칩 ${s.stack}${s.allIn ? ' (올인)' : ''}`;
+    stackDiv.textContent = `칩 ${fmt(s.stack)}${s.allIn ? ' (올인)' : ''}`;
     seatDiv.appendChild(stackDiv);
 
     if (s.committedThisStreet > 0) {
       const bet = document.createElement('div');
       bet.className = 'bet-chip';
-      bet.textContent = `베팅 ${s.committedThisStreet}`;
+      bet.textContent = `베팅 ${fmt(s.committedThisStreet)}`;
       seatDiv.appendChild(bet);
     }
 
     const stampDiv = document.createElement('div');
     stampDiv.className = 'fold-stamp';
-    stampDiv.textContent = isBustedAi ? '탭해서 리바인' : 'FOLD';
+    const rebuyCount = s.rebuysUsed || 0;
+    if (isBustedAi) {
+      stampDiv.textContent = rebuyCount > 0 ? `탭해서 리바인 (리바인 ${rebuyCount}회 사용)` : '탭해서 리바인';
+    } else if (isOtherSittingOut) {
+      stampDiv.textContent = rebuyCount > 0 ? `대기 중 (리바인 ${rebuyCount}회 사용)` : '대기 중';
+    } else {
+      stampDiv.textContent = 'FOLD';
+    }
     seatDiv.appendChild(stampDiv);
 
     const bubble = activeBubbles[s.idx];
@@ -558,7 +621,7 @@ function showActionBubble(record) {
   const cls = record.actionType === 'fold' ? 'fold-bubble' : record.actionType === 'allin' ? 'allin-bubble' : '';
   let text = ACTION_LABEL[record.actionType] || record.actionType;
   if ((record.actionType === 'call' || record.actionType === 'bet' || record.actionType === 'raise' || record.actionType === 'allin') && record.amount) {
-    text += ` +${record.amount}`;
+    text += ` +${fmt(record.amount)}`;
   }
   activeBubbles[record.seatIndex] = { text, cls };
 
@@ -612,7 +675,7 @@ function renderResultModal(result) {
       const seatIdx = Number(seatIdxStr);
       const li = document.createElement('li');
       li.className = 'winner';
-      li.innerHTML = `<div><div class="r-name">${escapeHtml(seatDisplayName(seatIdx))}<span class="r-badge">승리</span></div><div class="r-hand">상대가 폴드하여 팟 획득</div></div><div class="r-amount">+${amount}</div>`;
+      li.innerHTML = `<div><div class="r-name">${escapeHtml(seatDisplayName(seatIdx))}<span class="r-badge">승리</span></div><div class="r-hand">상대가 폴드하여 팟 획득</div></div><div class="r-amount">+${fmt(amount)}</div>`;
       list.appendChild(li);
     });
   } else {
@@ -650,7 +713,7 @@ function renderResultModal(result) {
 
       const amountDiv = document.createElement('div');
       amountDiv.className = 'r-amount';
-      amountDiv.textContent = amount > 0 ? `+${amount}` : '패배';
+      amountDiv.textContent = amount > 0 ? `+${fmt(amount)}` : '패배';
 
       li.appendChild(left);
       li.appendChild(amountDiv);
@@ -734,7 +797,7 @@ function updateActionBar(state) {
 
   el('btn-check').style.display = legal.canCheck ? 'block' : 'none';
   el('btn-call').style.display = legal.canCall ? 'block' : 'none';
-  el('btn-call').textContent = legal.canCall ? `콜 (${legal.callAmount})` : '콜';
+  el('btn-call').textContent = legal.canCall ? `콜 (${fmt(legal.callAmount)})` : '콜';
   el('btn-raise').style.display = legal.canRaise ? 'block' : 'none';
 
   const slider = el('raise-slider');

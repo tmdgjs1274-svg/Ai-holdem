@@ -207,6 +207,18 @@ input[type=range] { width: 100%; }
   50% { box-shadow: 0 2px 14px rgba(70,130,220,0.8); }
 }
 
+/* 파산 후 본인이 리바인 여부를 결정 중인 사람 좌석: 다른 사람 화면에서는
+   클릭 불가능한 회색 "대기 중" 스탬프로 보여준다 (폴드/AI 리바인과 구분). */
+.seat.sitting-out { opacity: 0.6; }
+.seat.sitting-out .fold-stamp {
+  display: block; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-16deg);
+  background: #5a5a5a; color: #fff; font-weight: 800; font-size: 11px;
+  padding: 3px 12px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.5);
+  letter-spacing: 1px; z-index: 3; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  pointer-events: none;
+}
+
 /* AI/사람 액션 발생 시 눈에 띄는 말풍선 */
 .seat .action-bubble {
   position: absolute; top: -36px; left: 50%; transform: translateX(-50%);
