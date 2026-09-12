@@ -56,6 +56,7 @@ class TableManager extends EventEmitter {
    * @param {number} [config.aiActionDelayMs] AI 액션 사이 텀, 기본 5000
    * @param {number} [config.maxRebuys] 최대 리바인 횟수. 0=리바인 불가, 기본 0
    * @param {number} [config.addOnAmount] 0=비활성화, 기본 0
+   * @param {boolean} [config.shuffleSeatsOnStart] 게임 시작 시 좌석을 무작위로 섞을지 여부. 기본 true(테스트 전용 옵션)
    */
   constructor(config) {
     super();
@@ -83,7 +84,11 @@ class TableManager extends EventEmitter {
       levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 15,
     };
 
-    this.engine = new GameEngine({ maxSeats: this.maxSeats, rng: config.rng || Math.random });
+    this.rng = config.rng || Math.random;
+    // 게임 시작 시 좌석 배치를 무작위로 섞을지 여부(기본 true). 테스트에서 좌석 인덱스를
+    // 고정해두고 검증해야 할 때만 false로 끈다.
+    this.shuffleSeatsOnStart = config.shuffleSeatsOnStart !== false;
+    this.engine = new GameEngine({ maxSeats: this.maxSeats, rng: this.rng });
     this.engine.on('action', (record) => this.emit('playerAction', record));
 
     this.blinds = new BlindStructure({
@@ -347,10 +352,50 @@ class TableManager extends EventEmitter {
   start() {
     if (this.status !== 'lobby') throw new Error('이미 시작되었습니다');
     this.status = 'in_progress';
+    if (this.shuffleSeatsOnStart) this._shuffleSeats();
     this.blinds.start();
     this._applyBlindLevel();
     this.emit('gameStarted', this.getLobbyState());
     this._playNextHand();
+  }
+
+  // 게임 시작 시 좌석 배치를 무작위로 섞는다(입장 순서대로 앉는 대신). 어차피 게임이 시작되면
+  // 새로운 사람이 더 합류할 수 없으므로(addGuest가 lobby 상태만 허용), 지금 채워져 있는
+  // 좌석 인덱스 집합은 그대로 두고 그 자리에 누가 앉을지만 무작위로 재배치한다.
+  // GameEngine.buttonIndex는 아직 -1(첫 핸드 시작 전)이라 버튼/포지션 관련 상태가 꼬일 일도 없다.
+  _shuffleSeats() {
+    const occupiedIdx = this.engine.seats.map((s, idx) => (s ? idx : null)).filter((idx) => idx != null);
+    if (occupiedIdx.length < 2) return;
+
+    const shuffledIdx = [...occupiedIdx];
+    for (let i = shuffledIdx.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      [shuffledIdx[i], shuffledIdx[j]] = [shuffledIdx[j], shuffledIdx[i]];
+    }
+
+    const oldSeats = {};
+    const oldRebuyCounts = { ...this.rebuyCounts };
+    const oldAddOnUsed = new Set(this.addOnUsed);
+    for (const idx of occupiedIdx) oldSeats[idx] = this.engine.seats[idx];
+
+    for (const idx of occupiedIdx) this.engine.seats[idx] = null;
+    this.humanBySeat = {};
+    this.seatByPlayer = {};
+    this.rebuyCounts = {};
+    this.addOnUsed = new Set();
+
+    occupiedIdx.forEach((oldIdx, i) => {
+      const newIdx = shuffledIdx[i];
+      const seatObj = oldSeats[oldIdx];
+      seatObj.seatIndex = newIdx;
+      this.engine.seats[newIdx] = seatObj;
+      this.rebuyCounts[newIdx] = oldRebuyCounts[oldIdx] || 0;
+      if (oldAddOnUsed.has(oldIdx)) this.addOnUsed.add(newIdx);
+      if (seatObj.type === 'human') {
+        this.humanBySeat[newIdx] = { playerId: seatObj.playerId, displayName: seatObj.displayName, connected: true };
+        this.seatByPlayer[seatObj.playerId] = newIdx;
+      }
+    });
   }
 
   _applyBlindLevel() {

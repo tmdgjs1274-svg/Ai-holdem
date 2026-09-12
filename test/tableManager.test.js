@@ -97,6 +97,53 @@ async function run() {
     assert.throws(() => table.addGuest('guest9', '친구9'), '9명을 초과해 합류할 수 없어야 함');
   });
 
+  await check('게임 시작 시 좌석 배치가 무작위로 섞여 입장 순서(호스트=0, AI=뒷자리)와 달라짐', async () => {
+    // rng가 항상 0을 반환하도록 고정하면 Fisher-Yates가 결정적인 회전(rotation) 순열을
+    // 만들어내므로, 실제로 좌석이 뒤섞였는지를 재현 가능하게 검증할 수 있다.
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 3,
+      startingStack: 3000,
+      levelDurationMinutes: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 60000, // 검증 도중 AI가 먼저 액션해버리지 않도록 텀을 크게 둠
+      rng: () => 0,
+    });
+    // 셔플 전: 호스트=0, AI는 맨 뒷자리(8,7,6)부터 채워짐 -> 점유 좌석은 [0,6,7,8]
+    assert.strictEqual(table.engine.seats[0].playerId, 'host1');
+    assert.strictEqual(table.engine.seats[6].type, 'ai');
+    assert.strictEqual(table.engine.seats[7].type, 'ai');
+    assert.strictEqual(table.engine.seats[8].type, 'ai');
+    const seat8AiName = table.engine.seats[8].displayName;
+
+    table.start();
+
+    // rng=0 고정 시 [0,6,7,8] -> 각자 한 칸씩 회전한 배치([6,7,8,0])가 되어야 한다.
+    assert.strictEqual(table.engine.seats[6].playerId, 'host1', '호스트가 좌석6으로 이동해야 함');
+    assert.strictEqual(table.seatByPlayer['host1'], 6, 'seatByPlayer도 새 좌석을 가리켜야 함');
+    assert.strictEqual(table.engine.seats[0].type, 'ai', '원래 좌석8에 있던 AI가 좌석0으로 이동해야 함');
+    assert.strictEqual(table.engine.seats[0].displayName, seat8AiName);
+    assert.strictEqual(table.engine.seats[7].type, 'ai', '원래 좌석6에 있던 AI가 좌석7로 이동해야 함');
+    assert.strictEqual(table.engine.seats[8].type, 'ai', '원래 좌석7에 있던 AI가 좌석8로 이동해야 함');
+    table._closeRoom('test done');
+  });
+
+  await check('shuffleSeatsOnStart:false로 끄면 예전처럼 입장 순서 그대로 좌석이 유지됨', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 2,
+      startingStack: 3000,
+      levelDurationMinutes: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
+      shuffleSeatsOnStart: false,
+    });
+    table.start();
+    assert.strictEqual(table.engine.seats[0].playerId, 'host1', '셔플을 껐다면 호스트는 그대로 좌석0에 남아야 함');
+    table._closeRoom('test done');
+  });
+
   await check('게임 진행: AI만 있는 경우 자동으로 여러 핸드 진행 + 칩 보존', async () => {
     const table = new TableManager({
       hostId: 'host1',
@@ -152,6 +199,7 @@ async function run() {
       interHandDelayMs: 10,
       aiActionDelayMs: 5,
       maxRebuys: 999,
+      shuffleSeatsOnStart: false, // 이 테스트는 좌석 인덱스(호스트=0)가 고정이라고 가정하므로 셔플을 끈다
     });
     table.engine.seats[0].stack = 60; // 호스트만 아주 짧은 스택으로 빠르게 파산 유도
 
@@ -201,6 +249,7 @@ async function run() {
       // "명시적으로 거부"하는 경로를 검증하려는 테스트이므로, maxRebuys=0(리바인 자체가 불가능)
       // 때문에 리바인 요청이 아예 뜨지 않는 경로로 새지 않도록 넉넉하게 허용해준다.
       maxRebuys: 999,
+      shuffleSeatsOnStart: false, // 좌석 인덱스(게스트=1)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     table.addGuest('guest1', 'Guest');
     // 게스트만 매우 짧게 만들어 빨리 파산하도록 조정
@@ -252,6 +301,7 @@ async function run() {
       aiActionDelayMs: 0,
       maxRebuys: 1,
       rebuyAmount: 55, // 리바인해도 다시 짧은 스택이라 금방 재파산하도록 함
+      shuffleSeatsOnStart: false, // 좌석 인덱스(게스트=1)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     table.addGuest('guest1', 'Guest');
     table.engine.seats[1].stack = 55; // 빠른 파산 유도
@@ -296,6 +346,7 @@ async function run() {
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       addOnAmount: 500,
+      shuffleSeatsOnStart: false, // 좌석 인덱스(호스트=0)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     table.start();
     const before = table.engine.seats[0].stack;
@@ -410,6 +461,10 @@ async function run() {
       levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
+      // 이 테스트는 호스트(사람)가 자동으로 액션하지 않으므로, 좌석이 섞여 호스트가 첫
+      // 액션자(UTG)로 배치되면 AI 액션이 하나도 나오지 않은 채 호스트 차례에서 멈춰버릴 수
+      // 있다. 이 테스트는 순전히 "AI 액션이 이벤트로 전달되는지"만 보려는 것이므로 셔플을 끈다.
+      shuffleSeatsOnStart: false,
     });
     let actionEvents = 0;
     table.on('playerAction', () => { actionEvents++; });
@@ -543,6 +598,7 @@ async function run() {
       aiActionDelayMs: 0,
       maxRebuys: 1,
       rebuyAmount: 55,
+      shuffleSeatsOnStart: false, // 좌석 인덱스(AI=maxSeats-1)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     // AI는 이제 맨 뒷자리(좌석 maxSeats-1)부터 채워진다 (낮은 인덱스는 사람 합류용으로 비워둠)
     const aiSeatIndex = table.maxSeats - 1;
@@ -601,6 +657,7 @@ async function run() {
       aiActionDelayMs: 0,
       maxRebuys: 0,
       rebuyAmount: 3000,
+      shuffleSeatsOnStart: false, // 좌석 인덱스(게스트=1, 호스트=0)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     table.addGuest('guest1', 'Guest');
     table.engine.seats[1].stack = 55; // 게스트를 빠르게 파산시킴
@@ -646,6 +703,7 @@ async function run() {
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       maxRebuys: 0, // AI도 예외 없이 리바인 불가
+      shuffleSeatsOnStart: false, // 좌석 인덱스(AI=maxSeats-1)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     const aiSeatIndex = table.maxSeats - 1;
     table.engine.seats[aiSeatIndex].stack = 55; // AI를 빠르게 파산시킴
@@ -691,6 +749,7 @@ async function run() {
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       maxRebuys: 999,
+      shuffleSeatsOnStart: false, // 좌석 인덱스(AI=maxSeats-1)가 고정이라고 가정하는 테스트라 셔플을 끈다
     });
     // 호스트만 짧은 스택으로 매 핸드 올인시키고, AI는 넉넉한 스택을 유지시켜 콜을 받아준다
     // (AI까지 매번 파산하면 사람의 수동 리바인 결정을 기다리며 게임이 멈춰버려 이 테스트가

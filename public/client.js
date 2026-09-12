@@ -22,6 +22,26 @@ let cachedTtsVoice = null;
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   window.speechSynthesis.onvoiceschanged = () => { cachedTtsVoice = null; };
 }
+// 모바일 크롬 등 일부 브라우저는 "사용자가 화면을 직접 터치/클릭한 반응"으로 호출된
+// speechSynthesis.speak()가 최소 한 번 있어야 그 뒤로 소켓 이벤트 등에서 자동으로 부르는
+// speak()도 소리가 난다(오디오 자동재생 제한과 비슷한 정책). 그래서 앱을 처음 터치/클릭하는
+// 순간 아주 짧고 조용한 발화를 한 번 실행해 이후의 액션 음성 안내가 막히지 않게 "잠금 해제"한다.
+let ttsUnlocked = false;
+function unlockTts() {
+  if (ttsUnlocked || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  ttsUnlocked = true;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    // 무시: 잠금 해제가 실패해도 이후 시도에서 다시 자연스럽게 걸릴 수 있음
+  }
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', unlockTts, { once: true, passive: true });
+  document.addEventListener('touchend', unlockTts, { once: true, passive: true });
+}
 function pickTtsVoice() {
   if (cachedTtsVoice) return cachedTtsVoice;
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
