@@ -151,11 +151,10 @@ class GameEngine extends EventEmitter {
     this.sbIndex = sbIndex;
     this.bbIndex = bbIndex;
 
-    // 앤티 (설정된 경우 전원)
+    // 앤티: "BB 앤티" 방식만 지원한다 - 전원이 조금씩 내는 대신, 버튼 한 명이 빅블라인드와
+    // 동일한 금액(this.ante)을 혼자 내고 팟에 더해진다.
     if (this.ante > 0) {
-      for (const seatIdx of inHandSeats) {
-        this._commit(seatIdx, Math.min(this.ante, this.seats[seatIdx].stack));
-      }
+      this._commit(this.buttonIndex, Math.min(this.ante, this.seats[this.buttonIndex].stack));
       // 앤티는 스트리트 커밋에 포함하지 않음 (베팅 라운드 콜금액 계산과 무관하도록 리셋)
       for (const seatIdx of inHandSeats) this.hs[seatIdx].committedThisStreet = 0;
     }
@@ -546,8 +545,10 @@ class GameEngine extends EventEmitter {
           committedThisStreet: hs ? hs.committedThisStreet : 0,
           committedThisHand: hs ? hs.committedThisHand : 0,
           position: hs && hs.inHand ? getPositionCategory(order, s.seatIndex) : null,
+          // 쇼다운이어도 폴드한 사람의 패는 공개하지 않는다(본인 제외). 실제로 쇼다운에
+          // 도달한(폴드하지 않은) 사람만 다른 사람에게 카드가 보인다.
           holeCards:
-            hs && (forSeatIndex === s.seatIndex || this.street === 'showdown')
+            hs && (forSeatIndex === s.seatIndex || (this.street === 'showdown' && !hs.folded))
               ? hs.holeCards.map(cardToString)
               : hs && hs.holeCards.length
               ? ['??', '??']

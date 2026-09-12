@@ -88,9 +88,7 @@ el('btn-create-submit').addEventListener('click', () => {
     aiSkillLevel: Number(el('create-aiSkill').value),
     startingStack: Number(el('create-startingStack').value),
     rebuyAmount: Number(el('create-rebuyAmount').value),
-    startSb: Number(el('create-sb').value),
-    startBb: Number(el('create-bb').value),
-    levelDurationMinutes: Number(el('create-levelMinutes').value),
+    bbAnte: el('create-bbAnte').checked,
     maxRebuys: Number(el('create-maxRebuys').value),
     addOnAmount: Number(el('create-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('create-aiActionDelay').value) * 1000),
@@ -134,7 +132,8 @@ function renderLobby() {
   latestLobby.seats.forEach((s, idx) => {
     const li = document.createElement('li');
     if (!s) {
-      li.innerHTML = `<span>좌석 ${idx + 1} (비어있음${idx === 1 ? ' · 게스트 대기' : ''})</span><span class="tag empty">-</span>`;
+      // 좌석 0(호스트) 이후의 빈 좌석은 전부 사람이 합류할 수 있는 자리다.
+      li.innerHTML = `<span>좌석 ${idx + 1} (비어있음${idx >= 1 ? ' · 참가 대기' : ''})</span><span class="tag empty">-</span>`;
     } else {
       const tagClass = s.type === 'ai' ? 'ai' : '';
       li.innerHTML = `<span>${escapeHtml(s.displayName)} ${s.playerId === myPlayerId ? '(나)' : ''}</span><span class="tag ${tagClass}">${s.type === 'ai' ? 'AI' : '사람'} · ${s.stack}</span>`;
@@ -183,9 +182,7 @@ function openSettingsModal() {
   el('set-aiCount').value = cfg.aiCount;
   el('set-aiCount-label').textContent = cfg.aiCount;
   el('set-startingStack').value = cfg.startingStack;
-  el('set-startSb').value = cfg.startSb;
-  el('set-startBb').value = cfg.startBb;
-  el('set-levelMinutes').value = cfg.levelDurationMinutes;
+  el('set-bbAnte').checked = cfg.bbAnte !== false;
   el('set-rebuyAmount').value = cfg.rebuyAmount;
   el('set-maxRebuys').value = cfg.maxRebuys;
   el('set-addOnAmount').value = cfg.addOnAmount;
@@ -217,9 +214,7 @@ el('btn-settings-save').addEventListener('click', () => {
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
     patch.startingStack = Number(el('set-startingStack').value);
-    patch.startSb = Number(el('set-startSb').value);
-    patch.startBb = Number(el('set-startBb').value);
-    patch.levelDurationMinutes = Number(el('set-levelMinutes').value);
+    patch.bbAnte = el('set-bbAnte').checked;
   }
   socket.emit('updateSettings', patch, (res) => {
     if (!res.ok) return toast('설정 변경 실패: ' + res.error);
@@ -412,6 +407,7 @@ function renderBlindInfo() {
   const level = blindTickBase ? blindTickBase.level : latestState && latestState.blindLevel;
   if (!level) return;
   let text = `블라인드 ${level.sb}/${level.bb}`;
+  if (level.ante > 0) text += ` (BB 앤티 ${level.ante})`;
   if (level.msRemaining != null && !level.isFinalLevel) {
     const elapsed = blindTickBase ? Date.now() - blindTickBase.receivedAt : 0;
     const remaining = Math.max(0, level.msRemaining - elapsed);

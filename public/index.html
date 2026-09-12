@@ -28,7 +28,7 @@
 
     <div class="grid2">
       <label>AI 인원수 (<span id="ai-count-label">3</span>명)
-        <input id="create-aiCount" type="range" min="0" max="7" value="3" />
+        <input id="create-aiCount" type="range" min="0" max="8" value="3" />
       </label>
       <label>AI 실수 빈도 (<span id="ai-mistake-label">8</span>%)
         <input id="create-aiMistake" type="range" min="0" max="30" value="8" />
@@ -49,15 +49,6 @@
     </div>
 
     <div class="grid2">
-      <label>시작 스몰블라인드
-        <input id="create-sb" type="number" value="100" min="1" step="100" />
-      </label>
-      <label>시작 빅블라인드
-        <input id="create-bb" type="number" value="200" min="2" step="100" />
-      </label>
-    </div>
-
-    <div class="grid2">
       <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
         <input id="create-maxRebuys" type="number" value="0" min="0" max="999" />
       </label>
@@ -67,13 +58,15 @@
     </div>
 
     <div class="grid2">
-      <label>블라인드 상승 주기 (분, 0=고정)
-        <input id="create-levelMinutes" type="number" value="15" min="0" max="180" />
+      <label class="checkbox-label">
+        <input id="create-bbAnte" type="checkbox" checked />
+        BB 앤티 사용
       </label>
       <label>AI 액션 텀 (초)
         <input id="create-aiActionDelay" type="number" value="5" min="0" max="15" step="0.5" />
       </label>
     </div>
+    <p class="hint">블라인드는 100/200 시작, 12레벨 고정 구조로 자동 진행됩니다.</p>
 
     <div class="row-buttons">
       <button id="btn-create-submit" class="btn primary">방 만들기</button>
@@ -104,7 +97,7 @@
   <div class="card wide">
     <h2>대기실</h2>
     <p>방 코드: <span id="lobby-roomcode" class="room-code"></span> <button id="btn-copy-code" class="btn tiny">복사</button></p>
-    <p class="hint">이 코드를 친구에게 공유하면 함께 플레이할 수 있어요 (최대 1명 추가 참가).</p>
+    <p class="hint">이 코드를 친구에게 공유하면 함께 플레이할 수 있어요 (최대 8명까지 추가 참가, 총 9명).</p>
     <div class="qr-box">
       <img id="lobby-qr" class="qr-img" alt="참가 QR 코드" />
       <p class="hint">카메라로 스캔하면 코드가 입력된 채로 참가 화면으로 바로 이동해요.</p>
@@ -205,22 +198,15 @@
 
     <div class="grid2" data-lobby-only>
       <label>AI 인원수 (<span id="set-aiCount-label">3</span>명)
-        <input id="set-aiCount" type="range" min="0" max="7" value="3" />
+        <input id="set-aiCount" type="range" min="0" max="8" value="3" />
       </label>
       <label>시작 칩
         <input id="set-startingStack" type="number" min="100" step="100" />
       </label>
     </div>
-    <div class="grid2" data-lobby-only>
-      <label>시작 스몰블라인드
-        <input id="set-startSb" type="number" min="1" step="100" />
-      </label>
-      <label>시작 빅블라인드
-        <input id="set-startBb" type="number" min="2" step="100" />
-      </label>
-    </div>
-    <label data-lobby-only>블라인드 상승 주기 (분, 0=고정)
-      <input id="set-levelMinutes" type="number" min="0" max="180" />
+    <label class="checkbox-label" data-lobby-only>
+      <input id="set-bbAnte" type="checkbox" />
+      BB 앤티 사용
     </label>
 
     <div class="grid2">

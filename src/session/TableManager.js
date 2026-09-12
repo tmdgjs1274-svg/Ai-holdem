@@ -20,8 +20,8 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
-  'aiCount', 'startingStack', 'rebuyAmount', 'startSb', 'startBb',
-  'levelDurationMinutes', 'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
+  'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte',
+  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
@@ -42,13 +42,11 @@ class TableManager extends EventEmitter {
    * @param {object} config
    * @param {string} config.hostId
    * @param {string} config.hostName
-   * @param {number} config.aiCount 0~7
+   * @param {number} config.aiCount 0~8 (사람이 늘어나면 실제로는 빈 좌석 수만큼만 채워짐)
    * @param {number} [config.maxSeats] 기본 9
    * @param {number} config.startingStack
    * @param {number} config.rebuyAmount
-   * @param {number} [config.startSb] 기본 100
-   * @param {number} [config.startBb] 기본 200
-   * @param {number} [config.levelDurationMinutes] 0이면 블라인드 고정
+   * @param {boolean} [config.bbAnte] 고정 블라인드 프리셋의 BB 앤티 사용 여부, 기본 true
    * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
    * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
@@ -75,20 +73,13 @@ class TableManager extends EventEmitter {
       // 올인 쇼다운에서 보드 카드를 한 장씩 공개할 때 카드 사이에 두는 텀(ms). 기본 900
       allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
       aiCount: Math.max(0, Math.min(config.aiCount || 0, this.maxSeats - 1)),
-      // 아래 3개는 블라인드 구조 표시용 미러(mirror) 필드 — 실제 값은 this.blinds가 갖고 있음
-      startSb: config.startSb || 100,
-      startBb: config.startBb || 200,
-      levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 15,
+      bbAnte: config.bbAnte !== false,
     };
 
     this.engine = new GameEngine({ maxSeats: this.maxSeats, rng: config.rng || Math.random });
     this.engine.on('action', (record) => this.emit('playerAction', record));
 
-    this.blinds = new BlindStructure({
-      startSb: this.config.startSb,
-      startBb: this.config.startBb,
-      levelDurationMinutes: this.config.levelDurationMinutes,
-    });
+    this.blinds = new BlindStructure({ bbAnte: this.config.bbAnte });
     this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
 
     this.status = 'lobby'; // lobby | in_progress | closed
@@ -110,7 +101,9 @@ class TableManager extends EventEmitter {
 
     // 호스트 착석 (seat 0)
     this._seatHuman(0, config.hostId, config.hostName || '호스트');
-    // AI 좌석은 seat 2번부터 채움 (seat 1은 게스트용으로 비워둠)
+    // AI 좌석은 맨 뒷자리(seat maxSeats-1)부터 거꾸로 채운다. 사람은 언제 몇 명이 더
+    // 합류할지 로비 단계에서는 알 수 없으므로(최대 9명까지 가능), 낮은 인덱스의 좌석을
+    // 최대한 비워둬서 나중에 합류하는 사람들이 앉을 자리를 확보한다.
     this._resizeAiSeats(this.config.aiCount);
   }
 
@@ -130,8 +123,9 @@ class TableManager extends EventEmitter {
     const currentAiSeats = this.engine.seats.filter((s) => s && s.type === 'ai');
     if (targetCount > currentAiSeats.length) {
       let seated = currentAiSeats.length;
-      for (let seatIdx = 0; seatIdx < this.maxSeats && seated < targetCount; seatIdx++) {
-        if (seatIdx === 1) continue; // 게스트 전용 슬롯 보존
+      // 좌석 1번(호스트 다음)부터가 아니라 맨 뒤(maxSeats-1)부터 거꾸로 채워서, 낮은
+      // 인덱스의 좌석을 나중에 합류할 사람들을 위해 최대한 비워둔다.
+      for (let seatIdx = this.maxSeats - 1; seatIdx >= 1 && seated < targetCount; seatIdx--) {
         if (this.engine.seats[seatIdx]) continue;
         this.engine.seatPlayer(seatIdx, {
           playerId: `ai-${seatIdx}`,
@@ -143,9 +137,11 @@ class TableManager extends EventEmitter {
         seated++;
       }
     } else if (targetCount < currentAiSeats.length) {
+      // 제거할 때는 낮은 인덱스(사람이 우선 채워야 할 자리)의 AI부터 제거한다.
+      const sorted = [...currentAiSeats].sort((a, b) => a.seatIndex - b.seatIndex);
       let toRemove = currentAiSeats.length - targetCount;
-      for (let i = currentAiSeats.length - 1; i >= 0 && toRemove > 0; i--) {
-        this.engine.removeSeat(currentAiSeats[i].seatIndex);
+      for (let i = 0; i < sorted.length && toRemove > 0; i++) {
+        this.engine.removeSeat(sorted[i].seatIndex);
         toRemove--;
       }
     }
@@ -153,16 +149,25 @@ class TableManager extends EventEmitter {
 
   // ---------- 참가 ----------
 
+  // 사람이 앉을 수 있는 가장 낮은 인덱스의 빈 좌석(1번부터 maxSeats-1번까지). 없으면 null.
+  _nextOpenHumanSeat() {
+    for (let i = 1; i < this.maxSeats; i++) {
+      if (!this.engine.seats[i]) return i;
+    }
+    return null;
+  }
+
   isFull() {
-    return this.humanBySeat[1] != null;
+    return this._nextOpenHumanSeat() == null;
   }
 
   addGuest(playerId, displayName) {
     if (this.status !== 'lobby') throw new Error('이미 시작된 게임에는 새 인간 플레이어가 참가할 수 없습니다');
-    if (this.isFull()) throw new Error('게스트 자리가 이미 차있습니다');
-    this._seatHuman(1, playerId, displayName || '게스트');
-    this.emit('playerJoined', { seatIndex: 1, playerId, displayName });
-    return 1;
+    const seatIdx = this._nextOpenHumanSeat();
+    if (seatIdx == null) throw new Error('방이 가득 찼습니다');
+    this._seatHuman(seatIdx, playerId, displayName || '게스트');
+    this.emit('playerJoined', { seatIndex: seatIdx, playerId, displayName });
+    return seatIdx;
   }
 
   reconnect(playerId) {
@@ -272,18 +277,11 @@ class TableManager extends EventEmitter {
     if ('rebuyAmount' in applied) {
       this.config.rebuyAmount = Math.max(100, Number(applied.rebuyAmount) || this.config.rebuyAmount);
     }
-    if (('startSb' in applied || 'startBb' in applied) && this.status === 'lobby') {
-      const cur = this.blinds.levels[0];
-      const sb = 'startSb' in applied ? Math.max(1, Number(applied.startSb) || cur.sb) : cur.sb;
-      const bb = 'startBb' in applied ? Math.max(2, Number(applied.startBb) || cur.bb) : cur.bb;
-      this.blinds = new BlindStructure({ startSb: sb, startBb: bb, levelDurationMinutes: this.blinds.levelDurationMinutes });
+    if ('bbAnte' in applied && this.status === 'lobby') {
+      const bbAnte = applied.bbAnte !== false;
+      this.blinds = new BlindStructure({ bbAnte });
       this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
-      this.config.startSb = sb;
-      this.config.startBb = bb;
-    }
-    if ('levelDurationMinutes' in applied && this.status === 'lobby') {
-      this.blinds.levelDurationMinutes = Math.max(0, Number(applied.levelDurationMinutes) || 0);
-      this.config.levelDurationMinutes = this.blinds.levelDurationMinutes;
+      this.config.bbAnte = bbAnte;
     }
     if ('aiMistakeRate' in applied) {
       this.config.aiMistakeRate = Math.max(0, Math.min(0.4, Number(applied.aiMistakeRate)));
@@ -511,9 +509,21 @@ class TableManager extends EventEmitter {
     let needsPause = false;
     for (const seat of busted) {
       if (seat.type === 'ai') {
-        // AI는 더 이상 자동으로 리바인되지 않는다. 비활성화(sitting-out) 상태로 두고,
-        // 사람이 좌석을 클릭해 리바인 여부를 직접 결정할 때까지 기다린다(handleAiRebuyDecision).
-        seat.isSittingOut = true;
+        const aiUsed = this.rebuyCounts[seat.seatIndex] || 0;
+        if (aiUsed >= this.config.maxRebuys) {
+          // 이 AI는 이미 리바인 한도를 다 썼거나(또는 maxRebuys=0이라 애초에 불가능함) ->
+          // 사람에게 리바인 결정을 물어봐야 소용없으므로(항상 거부될 것이므로) 좌석에서
+          // 완전히 제거한다. 그대로 sitting-out 상태로만 두면 아무도 리바인시킬 수 없는데도
+          // canStartHand()가 영원히 실패해 게임이 멈춰버리는 문제가 있었다.
+          this.emit('rebuyResult', { seatIndex: seat.seatIndex, accepted: false, reason: 'maxRebuysReached' });
+          this.engine.removeSeat(seat.seatIndex);
+          delete this.rebuyCounts[seat.seatIndex];
+        } else {
+          // 아직 리바인 여지가 있는 AI는 자동으로 리바인되지 않는다. 비활성화(sitting-out)
+          // 상태로 두고, 사람이 좌석을 클릭해 리바인 여부를 직접 결정할 때까지 기다린다
+          // (handleAiRebuyDecision).
+          seat.isSittingOut = true;
+        }
       } else {
         const used = this.rebuyCounts[seat.seatIndex] || 0;
         // maxRebuys=0은 "리바인 불가"를 의미한다(과거의 "무제한" 개념은 제거됨).
@@ -611,16 +621,9 @@ class TableManager extends EventEmitter {
     if (!seat) return;
     seat.isSittingOut = true;
     this.emit('rebuyResult', { seatIndex, accepted: false, reason });
-    if (seatIndex === 0) {
-      // 호스트가 더 이상 플레이할 수 없음 -> 게임 종료
-      const msg =
-        reason === 'maxRebuysReached'
-          ? '호스트가 최대 리바인 횟수에 도달해 게임이 종료되었습니다'
-          : '호스트가 리바인을 하지 않아 게임이 종료되었습니다';
-      this._closeRoom(msg);
-      return;
-    }
-    // 게스트인 경우: 게스트만 퇴장, 게임은 계속 진행
+    // 호스트든 게스트든, 리바인을 하지 않으면 그 좌석만 퇴장하고 게임은 계속 진행된다.
+    // (호스트의 관리 권한(this.hostId)은 좌석 점유 여부와 무관하므로, 호스트가 나가도
+    // 방을 닫거나 설정을 바꾸는 권한 체크에는 영향이 없다.)
     this.engine.removeSeat(seatIndex);
     delete this.humanBySeat[seatIndex];
     delete this.seatByPlayer[playerId];

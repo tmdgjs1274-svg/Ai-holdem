@@ -68,12 +68,33 @@ async function run() {
     assert.strictEqual(aiSeated, 3);
   });
 
-  await check('게스트 합류: 좌석1에 착석, 풀이면 재합류 불가', async () => {
-    const table = new TableManager({ hostId: 'host1', aiCount: 2, startingStack: 2000, interHandDelayMs: 10,
-      aiActionDelayMs: 5, levelDurationMinutes: 0 });
-    const seatIdx = table.addGuest('guest1', '친구');
-    assert.strictEqual(seatIdx, 1);
-    assert.throws(() => table.addGuest('guest2', '친구2'));
+  await check('게스트 합류: 낮은 인덱스 좌석부터 순서대로 착석, 완전히 풀이면 재합류 불가', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 8, // AI가 남은 좌석(1~8)을 전부 채움
+      startingStack: 2000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
+    });
+    assert.strictEqual(table.isFull(), true, 'AI가 전 좌석을 채웠으므로 이미 풀 상태여야 함');
+    assert.throws(() => table.addGuest('guest1', '친구'));
+  });
+
+  await check('최대 9명까지 사람이 순서대로 합류 가능(호스트 포함), 그 이상은 불가', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 0, // AI 없이 좌석 1~8을 사람에게 전부 개방
+      startingStack: 2000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
+    });
+    assert.strictEqual(table.isFull(), false);
+    for (let i = 1; i <= 8; i++) {
+      const seatIdx = table.addGuest(`guest${i}`, `친구${i}`);
+      assert.strictEqual(seatIdx, i, `게스트 ${i}는 좌석 ${i}에 앉아야 함(낮은 인덱스부터 순서대로)`);
+    }
+    assert.strictEqual(table.isFull(), true, '9명(호스트+게스트8명)이 다 찼으면 풀이어야 함');
+    assert.throws(() => table.addGuest('guest9', '친구9'), '9명을 초과해 합류할 수 없어야 함');
   });
 
   await check('게임 진행: AI만 있는 경우 자동으로 여러 핸드 진행 + 칩 보존', async () => {
@@ -121,48 +142,48 @@ async function run() {
     table._closeRoom('test done');
   });
 
-  await check('호스트 파산 후 리바인 거부 -> 방 종료', async () => {
+  await check('호스트 파산 후 리바인 거부 -> 호스트만 퇴장, 게임은 계속 진행', async () => {
     const table = new TableManager({
       hostId: 'host1',
       hostName: 'Host',
-      aiCount: 1,
-      startingStack: 60, // 아주 짧은 스택으로 빠르게 파산 유도 (거의 매 핸드 올인 상황)
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      aiCount: 2, // 호스트가 나가도 AI 2명이 남아 게임이 계속될 수 있도록
+      startingStack: 3000,
       allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
-      interHandDelayMs: 2,
-      aiActionDelayMs: 2,
-      // "명시적으로 거부"하는 경로를 검증하려는 테스트이므로, maxRebuys=0(리바인 자체가 불가능)
-      // 때문에 리바인 요청이 아예 뜨지 않는 경로로 새지 않도록 넉넉하게 허용해준다.
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
       maxRebuys: 999,
     });
+    table.engine.seats[0].stack = 60; // 호스트만 아주 짧은 스택으로 빠르게 파산 유도
+
     const stopAuto = autoDriveHumans(table, ['host1']);
-    let closed = false;
-    let closedReason = null;
-    table.on('roomClosed', ({ reason }) => { closed = true; closedReason = reason; });
+    let hostLeft = false;
+    let roomClosed = false;
     table.on('rebuyRequired', ({ seatIndex, playerId }) => {
-      if (playerId === 'host1') {
-        // 호스트가 리바인을 거부한다고 가정
-        table.handleRebuyDecision('host1', false);
-      }
+      if (playerId === 'host1') table.handleRebuyDecision('host1', false); // 호스트가 리바인을 거부한다고 가정
     });
-    // AI도 호스트와 똑같이 짧은 스택(60)이라 자주 파산하는데, AI는 더 이상 자동으로 리바인되지
-    // 않으므로 사람이 대신 계속 리바인시켜줘야 한다(안 그러면 상대가 없어져 게임이 멈춰버려서,
-    // 정작 검증하려는 "호스트 파산" 상황까지 도달하지 못할 수 있다).
-    table.on('awaitNextHand', () => {
-      const aiSeat = table.engine.seats[2];
-      if (aiSeat && aiSeat.type === 'ai' && aiSeat.isSittingOut && aiSeat.stack <= 0) {
-        try { table.handleAiRebuyDecision('host1', 2, true); } catch (e) { /* 무시 */ }
+    table.on('rebuyResult', ({ seatIndex, accepted }) => {
+      if (seatIndex === 0 && !accepted) hostLeft = true;
+    });
+    table.on('roomClosed', () => { roomClosed = true; });
+    // 호스트가 초반 올인을 우연히 이겨 스택이 불어나면 파산까지 오래 걸릴 수 있으므로,
+    // (아직 파산 전이라면) 매 핸드가 끝날 때마다 다시 짧은 스택으로 눌러줘서 매 핸드 올인을 강제한다.
+    // AI들도 파산해서 리바인 대기로 게임이 멈추는 일이 없도록 넉넉한 스택을 유지해준다.
+    table.on('handResult', () => {
+      const hostSeat = table.engine.seats[0];
+      if (hostSeat && hostSeat.stack > 60) hostSeat.stack = 60;
+      for (const seat of table.engine.seats) {
+        if (seat && seat.type === 'ai' && !seat.isSittingOut && seat.stack < 300) seat.stack = 3000;
       }
     });
     table.start();
-    // 매 핸드가 사실상 올인 코인플립이라 충분히 많은 핸드를 돌리면 호스트가 거의 확실히 파산함
-    await wait(4000);
+    await wait(2000);
     stopAuto();
-    assert.strictEqual(closed, true, '방이 종료되어야 함');
-    assert.strictEqual(table.status, 'closed');
-    assert.ok(closedReason.includes('리바인'));
+    assert.strictEqual(hostLeft, true, '호스트 퇴장 이벤트 발생');
+    assert.strictEqual(roomClosed, false, '호스트가 파산해도 방이 종료되면 안 됨');
+    assert.strictEqual(table.status, 'in_progress', '남은 AI들로 게임이 계속 진행되어야 함');
+    assert.strictEqual(table.engine.seats[0], null, '호스트 좌석은 비워져야 함');
+    assert.strictEqual(table.hostId, 'host1', '좌석에서 나가도 방 관리 권한(hostId)은 그대로 유지됨');
+    table._closeRoom('test done');
   });
 
   await check('게스트 파산 후 리바인 거부 -> 게스트만 퇴장, 게임 계속', async () => {
@@ -284,14 +305,16 @@ async function run() {
     table._closeRoom('test done');
   });
 
-  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, 블라인드 등)', async () => {
-    const table = new TableManager({ hostId: 'host1', aiCount: 2, startingStack: 3000, levelDurationMinutes: 0 });
-    table.updateConfig('host1', { aiCount: 4, startSb: 100, startBb: 200, aiActionDelayMs: 1234 });
+  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, BB 앤티 등)', async () => {
+    const table = new TableManager({ hostId: 'host1', aiCount: 2, startingStack: 3000 });
+    assert.strictEqual(table.config.bbAnte, true, '기본값은 BB 앤티 사용');
+    assert.ok(table.blinds.levels[4].ante > 0, '기본 상태에서는 5레벨부터 앤티가 있어야 함');
+    table.updateConfig('host1', { aiCount: 4, bbAnte: false, aiActionDelayMs: 1234 });
     const lobby = table.getLobbyState();
     const aiSeated = lobby.seats.filter((s) => s && s.type === 'ai').length;
     assert.strictEqual(aiSeated, 4);
-    assert.strictEqual(table.blinds.levels[0].sb, 100);
-    assert.strictEqual(table.blinds.levels[0].bb, 200);
+    assert.strictEqual(table.config.bbAnte, false);
+    assert.strictEqual(table.blinds.levels[4].ante, 0, 'BB 앤티를 끄면 앤티가 0이어야 함');
     assert.strictEqual(table.config.aiActionDelayMs, 1234);
     assert.throws(() => table.updateConfig('guest-imposter', { aiCount: 1 }), /호스트만/);
   });
@@ -389,11 +412,11 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
+      // 이 테스트는 "결과 확인 대기" 흐름만 검증하려는 것이므로, 상대가 1명뿐인 상황에서
+      // 그 AI가 우연히 파산해 방이 종료되어 버리는 일이 없도록 리바인을 넉넉히 허용한다.
+      maxRebuys: 999,
     });
     let awaitCount = 0;
     let handEnded = false;
@@ -401,6 +424,13 @@ async function run() {
     table.on('handResult', (result) => {
       handEnded = true;
       assert.strictEqual(typeof result.requiresConfirm, 'boolean', 'handResult에 requiresConfirm 플래그가 있어야 함');
+    });
+    // 이 테스트는 "결과 확인 대기" 흐름만 검증하려는 것이므로, 상대 AI가 어쩌다 파산해서
+    // 사람의 수동 리바인 결정을 기다리며 게임이 멈춰버리는 일이 없도록 즉시 리바인시켜준다.
+    table.on('waitingForAiRebuy', ({ seats }) => {
+      for (const s of seats) {
+        try { table.handleAiRebuyDecision('host1', s, true); } catch (e) { /* 무시 */ }
+      }
     });
     // 호스트는 폴드하지 않고 체크/콜만 하도록 강제 (다음 핸드 준비 확인 대기는 수동으로만 처리)
     const forceHostActive = () => {
@@ -427,7 +457,7 @@ async function run() {
     if (awaitCount > 0) {
       assert.strictEqual(table.engine.handNumber, handNumberBefore, '준비 확인 전에는 다음 핸드로 넘어가면 안 됨');
       table.handleReadyForNextHand('host1');
-      await wait(200);
+      await wait(600);
       assert.ok(table.engine.handNumber > handNumberBefore, '모두 준비 완료하면 다음 핸드로 진행되어야 함');
     }
     table._closeRoom('test done');
@@ -439,17 +469,23 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
+      // 상대가 1명뿐인 상황에서 그 AI가 우연히 파산해 방이 종료되는 일이 없도록 넉넉히 허용
+      maxRebuys: 999,
     });
     let awaitCount = 0;
     let sawRequiresConfirmTrue = false;
     table.on('awaitNextHand', () => { awaitCount++; });
     table.on('handResult', (result) => {
       if (result.requiresConfirm) sawRequiresConfirmTrue = true;
+    });
+    // 이 테스트는 "일찍 폴드해도 결과 확인 대기" 흐름만 검증하려는 것이므로, 상대 AI가 어쩌다
+    // 파산해서 사람의 수동 리바인 결정을 기다리며 게임이 멈춰버리는 일이 없도록 즉시 리바인시켜준다.
+    table.on('waitingForAiRebuy', ({ seats }) => {
+      for (const s of seats) {
+        try { table.handleAiRebuyDecision('host1', s, true); } catch (e) { /* 무시 */ }
+      }
     });
     // 호스트는 자기 차례가 오면 항상 폴드(가능한 경우)한다.
     const forceHostFold = () => {
@@ -475,7 +511,7 @@ async function run() {
     assert.ok(awaitCount > 0, '폴드했어도 다음 핸드 준비 확인(awaitNextHand)을 기다려야 함');
     assert.strictEqual(table.engine.handNumber, handNumberBefore, '준비 확인 전에는 다음 핸드로 넘어가면 안 됨');
     table.handleReadyForNextHand('host1');
-    await wait(200);
+    await wait(600);
     assert.ok(table.engine.handNumber > handNumberBefore, '준비 완료하면 다음 핸드로 진행되어야 함');
     table._closeRoom('test done');
   });
@@ -495,43 +531,45 @@ async function run() {
       maxRebuys: 1,
       rebuyAmount: 55,
     });
-    table.engine.seats[2].stack = 55; // AI를 짧은 스택으로 빠르게 파산시킴 (좌석1은 게스트 전용이라 AI는 좌석2)
+    // AI는 이제 맨 뒷자리(좌석 maxSeats-1)부터 채워진다 (낮은 인덱스는 사람 합류용으로 비워둠)
+    const aiSeatIndex = table.maxSeats - 1;
+    table.engine.seats[aiSeatIndex].stack = 55; // AI를 짧은 스택으로 빠르게 파산시킴
     const stopAuto = autoDriveHumans(table, ['host1']);
     table.on('awaitNextHand', () => table.handleReadyForNextHand('host1'));
     // AI가 다시 칩을 불려서 파산까지 오래 걸리는 일이 없도록 매 핸드 끝에 짧은 스택으로 눌러준다.
     table.on('handResult', () => {
-      const s = table.engine.seats[2];
+      const s = table.engine.seats[aiSeatIndex];
       if (s && !s.isSittingOut && s.stack > 55) s.stack = 55;
     });
     table.start();
     await wait(1500);
     stopAuto();
 
-    const aiSeat = table.engine.seats[2];
+    const aiSeat = table.engine.seats[aiSeatIndex];
     assert.ok(aiSeat, 'AI 좌석은 제거되지 않고 그대로 남아있어야 함(사람 좌석과 달리 자동 탈락되지 않음)');
     assert.strictEqual(aiSeat.stack, 0, '파산한 AI는 자동으로 리바인되지 않고 스택 0이어야 함');
     assert.strictEqual(aiSeat.isSittingOut, true, '파산한 AI는 자동으로 비활성화(sitting-out) 상태가 되어야 함');
-    assert.strictEqual(table.rebuyCounts[2] || 0, 0, '사람이 결정하기 전까지는 리바인 횟수가 늘어나면 안 됨');
+    assert.strictEqual(table.rebuyCounts[aiSeatIndex] || 0, 0, '사람이 결정하기 전까지는 리바인 횟수가 늘어나면 안 됨');
     assert.strictEqual(table.status, 'in_progress', '더 이상 핸드를 시작할 수 없어도 방이 닫히지 않고 대기해야 함');
 
     // 사람이 직접 리바인을 수락하면 정상적으로 리바인됨. 방이 다음 핸드를 시작할 수 없어
     // 대기 중이었다면 리바인 즉시 다음 핸드가 재개될 수 있으므로(블라인드가 곧바로 깎일 수
     // 있으므로), 실제로 지급된 금액은 seat의 "현재" 스택이 아니라 반환값으로 확인한다.
-    const accepted = table.handleAiRebuyDecision('host1', 2, true);
+    const accepted = table.handleAiRebuyDecision('host1', aiSeatIndex, true);
     assert.strictEqual(accepted.accepted, true);
     assert.strictEqual(accepted.stack, 55, '리바인으로 지급된 칩은 rebuyAmount(55)여야 함');
-    assert.strictEqual(table.engine.seats[2].isSittingOut, false);
-    assert.strictEqual(table.rebuyCounts[2], 1);
+    assert.strictEqual(table.engine.seats[aiSeatIndex].isSittingOut, false);
+    assert.strictEqual(table.rebuyCounts[aiSeatIndex], 1);
 
     // maxRebuys(1)를 이미 다 썼으므로, 다시 파산하면 더 이상 리바인할 수 없어야 함
-    table.engine.seats[2].stack = 0;
-    table.engine.seats[2].isSittingOut = true;
-    assert.throws(() => table.handleAiRebuyDecision('host1', 2, true), /리바인/);
+    table.engine.seats[aiSeatIndex].stack = 0;
+    table.engine.seats[aiSeatIndex].isSittingOut = true;
+    assert.throws(() => table.handleAiRebuyDecision('host1', aiSeatIndex, true), /리바인/);
 
     // 거부(accept:false)는 상태를 바꾸지 않아야 함
-    const declined = table.handleAiRebuyDecision('host1', 2, false);
+    const declined = table.handleAiRebuyDecision('host1', aiSeatIndex, false);
     assert.strictEqual(declined.accepted, false);
-    assert.strictEqual(table.engine.seats[2].stack, 0, '거부하면 스택이 그대로 0이어야 함');
+    assert.strictEqual(table.engine.seats[aiSeatIndex].stack, 0, '거부하면 스택이 그대로 0이어야 함');
 
     table._closeRoom('test done');
   });
@@ -571,7 +609,7 @@ async function run() {
       // 넉넉한 스택으로 유지해준다.
       const hostSeat = table.engine.seats[0];
       if (hostSeat && hostSeat.stack < 300) hostSeat.stack = 3000;
-      const aiSeat = table.engine.seats[2];
+      const aiSeat = table.engine.seats[table.maxSeats - 1];
       if (aiSeat && !aiSeat.isSittingOut && aiSeat.stack < 300) aiSeat.stack = 3000;
     });
     table.start();
@@ -585,6 +623,51 @@ async function run() {
     table._closeRoom('test done');
   });
 
+  await check('AI도 리바인 한도를 다 쓰면(또는 maxRebuys=0) 사람 응답을 기다리지 않고 좌석에서 제거됨', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1, // 상대가 AI 1명뿐 -> 이 AI가 완전히 제거되면 인원 부족으로 방이 종료됨
+      startingStack: 3000,
+      allinRevealDelayMs: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      maxRebuys: 0, // AI도 예외 없이 리바인 불가
+    });
+    const aiSeatIndex = table.maxSeats - 1;
+    table.engine.seats[aiSeatIndex].stack = 55; // AI를 빠르게 파산시킴
+
+    const stopAuto = autoDriveHumans(table, ['host1']);
+    let waitingForAiRebuyFired = false;
+    let aiRebuyResultReason = null;
+    let roomClosed = false;
+    let roomClosedReason = null;
+    table.on('waitingForAiRebuy', () => { waitingForAiRebuyFired = true; });
+    table.on('rebuyResult', ({ seatIndex, accepted, reason }) => {
+      if (seatIndex === aiSeatIndex && !accepted) aiRebuyResultReason = reason;
+    });
+    table.on('roomClosed', ({ reason }) => { roomClosed = true; roomClosedReason = reason; });
+    // AI가 초반 올인을 우연히 이겨 스택이 불어나면 파산까지 오래 걸려 테스트가 느려지거나(드물게)
+    // 시간 안에 파산하지 않을 수 있으므로, 매 핸드가 끝날 때마다 다시 짧은 스택으로 눌러줘서
+    // 매 핸드 올인을 강제한다(이미 파산해 좌석이 제거된 뒤라면 seat가 null이라 자연히 무시됨).
+    table.on('handResult', () => {
+      const aiSeat = table.engine.seats[aiSeatIndex];
+      if (aiSeat && aiSeat.stack > 55) aiSeat.stack = 55;
+    });
+    table.start();
+    await wait(3000);
+    stopAuto();
+
+    // 리바인이 애초에 불가능한(maxRebuys=0) AI이므로, 사람에게 리바인 여부를 묻는(수동 확인 대기)
+    // 일 없이 곧바로 탈락 처리되어야 한다.
+    assert.strictEqual(waitingForAiRebuyFired, false, 'AI가 리바인 불가능하면 확인 대기 없이 바로 제거되어야 함');
+    assert.strictEqual(aiRebuyResultReason, 'maxRebuysReached', 'AI 제거 사유는 maxRebuysReached여야 함');
+    assert.strictEqual(table.engine.seats[aiSeatIndex], null, 'AI 좌석은 완전히 비워져야 함');
+    // 상대가 AI 1명뿐이었으므로, 제거 후에는 인원 부족으로 방이 종료되는 것이 정상 동작이다.
+    assert.strictEqual(roomClosed, true, '남은 참가자가 1명뿐이면 방이 종료되어야 함');
+    assert.ok(roomClosedReason.includes('참가자'), `종료 사유가 인원 부족이어야 함 (실제: ${roomClosedReason})`);
+  });
+
   await check('올인 쇼다운에서는 보드 카드가 한 번에 다 공개되지 않고 한 장씩 순서대로 공개된다', async () => {
     const table = new TableManager({
       hostId: 'host1',
@@ -592,14 +675,15 @@ async function run() {
       aiCount: 1,
       startingStack: 60,
       rebuyAmount: 60,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
-      aiAutoRebuy: true,
       maxRebuys: 999,
     });
+    // 호스트만 짧은 스택으로 매 핸드 올인시키고, AI는 넉넉한 스택을 유지시켜 콜을 받아준다
+    // (AI까지 매번 파산하면 사람의 수동 리바인 결정을 기다리며 게임이 멈춰버려 이 테스트가
+    // 검증하려는 "올인 쇼다운 단계적 공개"까지 도달하지 못할 수 있다).
+    const aiSeatIndex = table.maxSeats - 1;
+    table.engine.seats[aiSeatIndex].stack = 5000;
 
     // 핸드별로 boardReveal에서 관찰한 보드 길이들을 모아둔다
     let currentRevealLens = [];
@@ -608,6 +692,8 @@ async function run() {
     table.on('handResult', () => {
       if (currentRevealLens.length) revealSequences.push(currentRevealLens.slice());
       currentRevealLens = [];
+      const aiSeat = table.engine.seats[aiSeatIndex];
+      if (aiSeat && !aiSeat.isSittingOut && aiSeat.stack < 1000) aiSeat.stack = 5000;
     });
 
     // 호스트는 자기 차례가 오면 항상 올인으로 밀어붙여서 올인 쇼다운이 자주 나오게 한다
