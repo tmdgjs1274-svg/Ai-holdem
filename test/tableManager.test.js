@@ -55,9 +55,6 @@ async function run() {
       hostName: '승헌',
       aiCount: 3,
       startingStack: 2000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 5,
     });
@@ -105,7 +102,6 @@ async function run() {
       hostName: 'Host',
       aiCount: 3,
       startingStack: 3000,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 60000, // 검증 도중 AI가 먼저 액션해버리지 않도록 텀을 크게 둠
       rng: () => 0,
@@ -134,7 +130,6 @@ async function run() {
       hostId: 'host1',
       aiCount: 2,
       startingStack: 3000,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 5,
       shuffleSeatsOnStart: false,
@@ -150,9 +145,7 @@ async function run() {
       hostName: 'Host',
       aiCount: 4,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0, // 여러 핸드를 빠르게 돌려야 하는 테스트라 연출용 텀을 없앰
       interHandDelayMs: 15,
       aiActionDelayMs: 0, // 여러 핸드를 빠르게 돌려야 하는 테스트라 텀을 없앰
@@ -240,9 +233,7 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 15,
       aiActionDelayMs: 5,
@@ -293,9 +284,7 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
@@ -342,7 +331,6 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       addOnAmount: 500,
@@ -356,11 +344,19 @@ async function run() {
     table._closeRoom('test done');
   });
 
-  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, 블라인드, BB 앤티 등)', async () => {
+  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, 블라인드 구조, BB 앤티 등)', async () => {
     const table = new TableManager({ hostId: 'host1', aiCount: 2, startingStack: 3000 });
     assert.strictEqual(table.config.bbAnte, true, '기본값은 BB 앤티 사용');
     assert.strictEqual(table.blinds.levels[0].ante, table.blinds.levels[0].bb, '기본 상태에서는 앤티=bb여야 함');
-    table.updateConfig('host1', { aiCount: 4, startSb: 100, startBb: 200, bbAnte: false, aiActionDelayMs: 1234 });
+    table.updateConfig('host1', {
+      aiCount: 4,
+      blindLevels: [
+        { sb: 100, bb: 200, ante: 0, durationMinutes: 10 },
+        { sb: 200, bb: 400, ante: 0, durationMinutes: 10 },
+      ],
+      bbAnte: false,
+      aiActionDelayMs: 1234,
+    });
     const lobby = table.getLobbyState();
     const aiSeated = lobby.seats.filter((s) => s && s.type === 'ai').length;
     assert.strictEqual(aiSeated, 4);
@@ -372,44 +368,72 @@ async function run() {
     assert.throws(() => table.updateConfig('guest-imposter', { aiCount: 1 }), /호스트만/);
   });
 
-  await check('블라인드 상승 주기(levelDurationMinutes)를 사용자가 직접 설정 가능(레벨별 개별 시간 없이 공통 적용)', async () => {
+  await check('블라인드 구조(레벨 추가/삭제/개별 시간·금액)를 로비에서 통째로 교체 가능', async () => {
     const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000 });
-    assert.strictEqual(table.config.levelDurationMinutes, 5, '기본값은 5분');
-    table.updateConfig('host1', { levelDurationMinutes: 20 });
-    assert.strictEqual(table.config.levelDurationMinutes, 20);
-    assert.strictEqual(table.blinds.levelDurationMinutes, 20);
+    table.updateConfig('host1', {
+      blindLevels: [
+        { sb: 100, bb: 200, ante: 0, durationMinutes: 7 },
+        { sb: 200, bb: 400, ante: 0, durationMinutes: 10 },
+        { sb: 300, bb: 600, ante: 0, durationMinutes: 3 },
+      ],
+    });
+    assert.strictEqual(table.blinds.levels.length, 3, '레벨 개수가 새 구조로 교체되어야 함');
     table.blinds.start(1_000_000);
-    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 19 * 60000), 0, '공통 주기이므로 19분에는 아직 레벨1');
-    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 20 * 60000), 1, '20분이 지나면 레벨2로 승급');
+    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 6 * 60000), 0, '6분: 아직 레벨1(7분)');
+    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 7 * 60000), 1, '7분: 레벨2로 승급');
   });
 
-  await check('게임 진행 중에도 블라인드 상승 주기는 변경 가능(지금 레벨은 유지한 채 새 주기로 다시 카운트)', async () => {
+  await check('휴식(브레이크) 레벨을 포함한 구조도 그대로 반영되고, 직전 레벨 블라인드를 이어받음', async () => {
+    const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000 });
+    table.updateConfig('host1', {
+      blindLevels: [
+        { sb: 100, bb: 200, ante: 50, durationMinutes: 5 },
+        { isBreak: true, durationMinutes: 5 },
+        { sb: 300, bb: 600, ante: 0, durationMinutes: 5 },
+      ],
+    });
+    assert.strictEqual(table.blinds.levels[1].isBreak, true);
+    table.blinds.start(1_000_000);
+    const duringBreak = table.blinds.getCurrent(1_000_000 + 7 * 60000);
+    assert.strictEqual(duringBreak.isBreak, true);
+    assert.strictEqual(duringBreak.sb, 100, '휴식 중에도 실제 적용 블라인드는 직전 레벨 값을 유지해야 함');
+    assert.strictEqual(duringBreak.ante, 50);
+  });
+
+  await check('"BB 앤티 사용유무" 일괄 토글은 레벨별 sb/bb/시간은 그대로 두고 앤티만 일괄 변경함', async () => {
     const table = new TableManager({
       hostId: 'host1',
       aiCount: 1,
       startingStack: 3000,
-      levelDurationMinutes: 15,
-      shuffleSeatsOnStart: false,
+      bbAnte: false,
+      blindLevels: [
+        { sb: 100, bb: 200, ante: 0, durationMinutes: 7 },
+        { isBreak: true, durationMinutes: 5 },
+        { sb: 200, bb: 400, ante: 0, durationMinutes: 7 },
+      ],
     });
-    table.blinds.start(1_000_000);
-    // 15분 주기로 32분 경과 -> floor(32/15)=2, 즉 레벨3(인덱스2)
-    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 32 * 60000), 2, '변경 전: 15분 주기 기준 레벨3');
+    table.updateConfig('host1', { bbAnte: true });
+    assert.strictEqual(table.blinds.levels[0].ante, 200, '실제 레벨은 앤티=bb로 켜져야 함');
+    assert.strictEqual(table.blinds.levels[0].sb, 100, '앤티 토글이 sb/bb/시간을 건드리면 안 됨');
+    assert.strictEqual(table.blinds.levels[1].isBreak, true, '휴식 레벨은 토글 후에도 그대로 유지되어야 함');
+    assert.strictEqual(table.blinds.levels[2].ante, 400);
+  });
 
-    table.status = 'in_progress'; // updateConfig가 live-editable 경로를 타도록 진행 중 상태로 설정
-    const now = 1_000_000 + 32 * 60000;
-    const RealDateNow = Date.now;
-    Date.now = () => now; // setLevelDurationMinutes가 참조하는 현재 시각을 고정
-    try {
-      table.updateConfig('host1', { levelDurationMinutes: 5 });
-    } finally {
-      Date.now = RealDateNow;
-    }
-    assert.strictEqual(table.config.levelDurationMinutes, 5);
-    // 주기를 5분으로 바꿔도, 방금 전까지 있던 레벨3에서 그대로 유지되어야 한다(레벨이 튀면 안 됨)
-    assert.strictEqual(table.blinds.currentLevelIndex(now), 2, '주기 변경 직후에도 레벨이 유지되어야 함');
-    // 새 주기(5분) 기준으로 다시 카운트다운이 시작되므로, 변경 시점으로부터 5분 뒤에 레벨4로 승급
-    assert.strictEqual(table.blinds.currentLevelIndex(now + 4 * 60000), 2, '새 주기 기준 아직 4분이면 레벨 유지');
-    assert.strictEqual(table.blinds.currentLevelIndex(now + 5 * 60000), 3, '새 주기 기준 5분이 지나면 레벨4로 승급');
+  await check('블라인드 구조 편집은 로비에서만 가능하고, 게임 진행 중에는 변경되지 않음', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 1,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+    });
+    table.start();
+    const before = table.blinds.levels;
+    table.updateConfig('host1', {
+      blindLevels: [{ sb: 999, bb: 1998, ante: 0, durationMinutes: 7 }],
+    });
+    assert.strictEqual(table.blinds.levels, before, '진행 중에는 blindLevels가 화이트리스트에 없으므로 변경되면 안 됨');
+    table._closeRoom('test done');
   });
 
   await check('게임 진행 중에는 aiCount/startingStack 같은 항목은 변경되지 않음(화이트리스트)', async () => {
@@ -417,7 +441,6 @@ async function run() {
       hostId: 'host1',
       aiCount: 2,
       startingStack: 3000,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
     });
@@ -430,7 +453,7 @@ async function run() {
   });
 
   await check('AI 실력(aiSkillLevel) 설정 값이 적용되고 0~100 범위로 clamp됨', async () => {
-    const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000, levelDurationMinutes: 0 });
+    const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000 });
     assert.strictEqual(table.config.aiSkillLevel, 75, '기본값은 75여야 함');
     table.updateConfig('host1', { aiSkillLevel: 30 });
     assert.strictEqual(table.config.aiSkillLevel, 30);
@@ -446,9 +469,7 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
@@ -487,7 +508,6 @@ async function run() {
       hostId: 'host1',
       aiCount: 3,
       startingStack: 3000,
-      levelDurationMinutes: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
       // 이 테스트는 호스트(사람)가 자동으로 액션하지 않으므로, 좌석이 섞여 호스트가 첫
@@ -619,9 +639,7 @@ async function run() {
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0, // 올인 카드 순차 공개 연출은 별도 테스트에서 검증하므로 여기서는 꺼서 빠르게 돌림
       interHandDelayMs: 10,
       aiActionDelayMs: 0,
@@ -672,15 +690,73 @@ async function run() {
     table._closeRoom('test done');
   });
 
+  await check('handleAiRemoveDecision: 리바인 여지가 남은 AI도 "리바인 안하고 내보내기"로 좌석에서 완전히 제거 가능', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1, // 상대가 AI 1명뿐 -> 제거하면 인원 부족으로 방이 종료되어야 함
+      startingStack: 3000,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
+      allinRevealDelayMs: 0,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      maxRebuys: 999, // 리바인 여지가 충분히 남아있는 상태에서도 내보낼 수 있어야 함을 보이기 위함
+      shuffleSeatsOnStart: false,
+    });
+    const aiSeatIndex = table.maxSeats - 1;
+    table.engine.seats[aiSeatIndex].stack = 55;
+    const stopAuto = autoDriveHumans(table, ['host1']);
+    table.on('handResult', () => {
+      const s = table.engine.seats[aiSeatIndex];
+      if (s && !s.isSittingOut && s.stack > 55) s.stack = 55;
+    });
+    table.start();
+    await wait(1500);
+    stopAuto();
+
+    const aiSeat = table.engine.seats[aiSeatIndex];
+    assert.ok(aiSeat && aiSeat.isSittingOut && aiSeat.stack === 0, '테스트 전제: AI가 파산해 대기 중이어야 함');
+    assert.ok((table.rebuyCounts[aiSeatIndex] || 0) < table.config.maxRebuys, '테스트 전제: 아직 리바인 여지가 남아있어야 함');
+
+    // "닫기"(그냥 무시)와 달리, 이건 확정적으로 좌석을 비운다.
+    let removeReason = null;
+    table.on('rebuyResult', ({ seatIndex, accepted, reason }) => {
+      if (seatIndex === aiSeatIndex && !accepted) removeReason = reason;
+    });
+    let roomClosed = false;
+    table.on('roomClosed', () => { roomClosed = true; });
+    const result = table.handleAiRemoveDecision('host1', aiSeatIndex);
+    assert.strictEqual(result.removed, true);
+    assert.strictEqual(removeReason, 'removedByHost');
+    assert.strictEqual(table.engine.seats[aiSeatIndex], null, 'AI 좌석은 완전히 비워져야 함');
+    assert.strictEqual(table.rebuyCounts[aiSeatIndex], undefined, '리바인 횟수 기록도 함께 정리되어야 함');
+    // 상대가 그 AI 1명뿐이었으므로, 제거 후 인원 부족으로 방이 종료되는 것이 정상 동작
+    assert.strictEqual(roomClosed, true, '남은 참가자가 1명뿐이면 방이 종료되어야 함');
+  });
+
+  await check('handleAiRemoveDecision: 스택이 남아있거나 AI가 아닌 좌석은 내보낼 수 없음', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      aiCount: 1,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 60000, // 검증 도중 AI가 먼저 액션해버리지 않도록 텀을 크게 둠
+      shuffleSeatsOnStart: false,
+    });
+    table.start();
+    const aiSeatIndex = table.maxSeats - 1;
+    assert.throws(() => table.handleAiRemoveDecision('host1', aiSeatIndex), /내보낼 수 있는 상태가 아닙니다/, '스택이 남아있는 AI는 내보낼 수 없어야 함');
+    assert.throws(() => table.handleAiRemoveDecision('host1', 0), /AI 좌석이 아닙니다/, '사람 좌석(호스트)은 내보낼 수 없어야 함');
+    table._closeRoom('test done');
+  });
+
   await check('maxRebuys=0이면 파산 시 리바인 요청 없이 즉시 탈락 처리됨(리바인 무제한 개념 제거)', async () => {
     const table = new TableManager({
       hostId: 'host1',
       hostName: 'Host',
       aiCount: 1,
       startingStack: 3000,
-      startSb: 25,
-      startBb: 50,
-      levelDurationMinutes: 0,
+      blindLevels: [{ sb: 25, bb: 50, ante: 0, durationMinutes: 5 }],
       allinRevealDelayMs: 0,
       interHandDelayMs: 10,
       aiActionDelayMs: 0,

@@ -56,15 +56,25 @@ function pushFoldThreshold(position, stackBb) {
   return Math.max(base, 0.5);
 }
 
-function sizePreflopRaise(engine, legal, ctx) {
+// 포지션별 기본 오픈레이즈 배수(빅블라인드 기준). 늦은 포지션일수록 조금 더 작게,
+// 이른 포지션일수록 조금 더 크게 여는 실제 사람들의 경향을 대략 반영한다.
+const OPEN_RAISE_BASE_MULT = { UTG: 3, MP: 2.7, CO: 2.4, BTN: 2.2, SB: 3, BB: 2.5 };
+
+function sizePreflopRaise(engine, legal, ctx, rng) {
   const bb = engine.bigBlind;
+  const rand = rng || Math.random;
   let raiseTo;
   if (ctx.raiseLevel === 0) {
-    raiseTo = engine.currentBet + bb * 2.2;
+    // 예전에는 항상 정확히 bb의 정수배로 반올림해서 사실상 매번 3bb로 고정되어 버렸다.
+    // 2~3bb 사이에서 포지션에 따라, 그리고 약간의 무작위성으로 자연스럽게 오픈 사이즈가
+    // 달라지도록 한다(정수 bb배로 딱 떨어뜨리지 않고 100원 단위로만 반올림).
+    const baseMult = OPEN_RAISE_BASE_MULT[ctx.position] ?? 2.5;
+    const jitter = (rand() - 0.5) * 0.6; // ±0.3bb
+    const mult = Math.max(2, Math.min(3, baseMult + jitter));
+    raiseTo = engine.currentBet + bb * (mult - 1);
   } else {
     raiseTo = engine.currentBet * 3;
   }
-  raiseTo = Math.round(raiseTo / bb) * bb;
   raiseTo = Math.max(legal.minRaiseTo, Math.min(raiseTo, legal.maxRaiseTo));
   return roundRaiseTo(raiseTo, legal, 100); // 100원 단위로 보기 좋게 반올림
 }
@@ -107,7 +117,7 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   if (unopenedPot) {
     // 오픈 여부 결정: 레이즈-오어-폴드 원칙 (림프는 최소화, 가끔 사람처럼 림프)
     if (score >= openThresh) {
-      if (legal.canRaise) return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx) };
+      if (legal.canRaise) return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng) };
       if (legal.canCheck) return { actionType: 'check' };
       return { actionType: 'call' };
     }
@@ -121,10 +131,10 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const bluffRoll = rng() < 0.12 && ctx.numActive <= 5;
 
   if (score >= raiseThresh && legal.canRaise) {
-    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx) };
+    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng) };
   }
   if (bluffWindow && bluffRoll && legal.canRaise) {
-    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx) };
+    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng) };
   }
   if (score >= callThresh) {
     if (legal.canCheck) return { actionType: 'check' };

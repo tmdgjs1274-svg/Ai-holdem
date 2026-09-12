@@ -49,15 +49,6 @@
     </div>
 
     <div class="grid2">
-      <label>시작 스몰블라인드
-        <input id="create-sb" type="number" value="100" min="1" step="100" />
-      </label>
-      <label>시작 빅블라인드
-        <input id="create-bb" type="number" value="200" min="2" step="100" />
-      </label>
-    </div>
-
-    <div class="grid2">
       <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
         <input id="create-maxRebuys" type="number" value="1" min="0" max="999" />
       </label>
@@ -67,18 +58,14 @@
     </div>
 
     <div class="grid2">
-      <label>블라인드 상승 주기 (분, 0=고정)
-        <input id="create-levelMinutes" type="number" value="5" min="0" max="180" />
-      </label>
       <label>AI 액션 텀 (초)
         <input id="create-aiActionDelay" type="number" value="1.5" min="0" max="15" step="0.5" />
       </label>
+      <label>&nbsp;
+        <button id="btn-open-blind-editor-create" type="button" class="btn secondary tiny">블라인드 구조 편집</button>
+      </label>
     </div>
-
-    <label class="checkbox-label">
-      <input id="create-bbAnte" type="checkbox" checked />
-      BB 앤티 사용 (빅블라인드가 그 레벨 빅블라인드만큼 추가로 혼자 냄)
-    </label>
+    <p class="hint" id="create-blind-summary"></p>
 
     <div class="row-buttons">
       <button id="btn-create-submit" class="btn primary">방 만들기</button>
@@ -198,6 +185,7 @@
     <p id="ai-rebuy-msg"></p>
     <div class="row-buttons">
       <button id="btn-ai-rebuy-yes" class="btn primary">리바인시키기</button>
+      <button id="btn-ai-rebuy-remove" class="btn danger">리바인 안하고 내보내기</button>
       <button id="btn-ai-rebuy-no" class="btn ghost">닫기</button>
     </div>
   </div>
@@ -216,21 +204,11 @@
         <input id="set-startingStack" type="number" min="100" step="100" />
       </label>
     </div>
-    <div class="grid2" data-lobby-only>
-      <label>시작 스몰블라인드
-        <input id="set-startSb" type="number" min="1" step="100" />
-      </label>
-      <label>시작 빅블라인드
-        <input id="set-startBb" type="number" min="2" step="100" />
-      </label>
+    <div class="row-buttons" data-lobby-only>
+      <button id="btn-open-blind-editor-settings" type="button" class="btn secondary">블라인드 구조 편집</button>
     </div>
-    <label>블라인드 상승 주기 (분, 0=고정) — 게임 중에도 변경 가능
-      <input id="set-levelMinutes" type="number" min="0" max="180" />
-    </label>
-    <label class="checkbox-label" data-lobby-only>
-      <input id="set-bbAnte" type="checkbox" />
-      BB 앤티 사용 (빅블라인드가 그 레벨 빅블라인드만큼 추가로 혼자 냄)
-    </label>
+    <p class="hint" id="set-blind-summary" data-lobby-only></p>
+    <p class="hint" data-in-progress-only>블라인드 구조는 게임 시작 전(로비)에서만 편집할 수 있습니다.</p>
 
     <div class="grid2">
       <label>리바인 칩
@@ -263,6 +241,47 @@
     <div class="row-buttons">
       <button id="btn-settings-save" class="btn primary">저장</button>
       <button id="btn-settings-cancel" class="btn ghost">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 블라인드 구조 편집 모달 (레벨 추가/삭제/개별 금액·시간 수정, 휴식 포함) -->
+<div id="blind-editor-modal" class="modal hidden">
+  <div class="modal-box wide">
+    <h3>블라인드 구조 편집</h3>
+    <p class="hint">레벨을 추가/삭제하고, 각 레벨의 시간·금액·앤티를 개별로 설정할 수 있어요. 저장을 눌러야 반영됩니다.</p>
+
+    <label class="checkbox-label">
+      <input id="blind-editor-bbAnte" type="checkbox" checked />
+      BB 앤티 사용유무 (전체 레벨 일괄 적용, 이후 레벨별로 다시 수정 가능)
+    </label>
+
+    <div class="row-buttons">
+      <button id="btn-blind-add-level" type="button" class="btn secondary tiny">레벨 추가</button>
+      <button id="btn-blind-add-break" type="button" class="btn secondary tiny">휴식 추가</button>
+      <button id="btn-blind-reset-default" type="button" class="btn ghost tiny">기본값으로 초기화</button>
+    </div>
+
+    <div class="blind-table-wrap">
+      <table class="blind-table">
+        <thead>
+          <tr>
+            <th>레벨</th>
+            <th>시간(분)</th>
+            <th>누적시간</th>
+            <th>스몰블라인드</th>
+            <th>빅블라인드</th>
+            <th>BB앤티</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="blind-editor-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="row-buttons">
+      <button id="btn-blind-editor-save" class="btn primary">저장</button>
+      <button id="btn-blind-editor-cancel" class="btn ghost">취소</button>
     </div>
   </div>
 </div>

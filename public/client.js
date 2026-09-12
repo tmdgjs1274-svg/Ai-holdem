@@ -13,11 +13,19 @@ const ACTION_LABEL = {
   fold: '폴드', check: '체크', call: '콜', bet: '베팅', raise: '레이즈', allin: '올인',
 };
 
-// ---------- 액션 음성 안내 (체크/레이즈/폴드만, 중저음 남자 목소리 느낌) ----------
+// ---------- 액션 음성 안내 (체크/콜/레이즈/폴드/올인, 중저음 남자 목소리 느낌) ----------
 // 브라우저 내장 Web Speech API를 사용하므로 별도 음원 파일이 필요 없지만,
 // 음색(성별) 자체를 강제로 고를 수는 없어서 "남성"류 이름의 한국어 음성을 우선 선택하고
 // 피치를 낮춰 중저음 느낌을 낸다 (브라우저/OS에 따라 결과가 다를 수 있음).
-const VOICE_ACTION_TEXT = { check: '체크', fold: '폴드', raise: '레이즈' };
+// 액션마다 피치/속도를 조금씩 다르게 줘서(체크는 담담하게, 레이즈는 힘있게, 올인은 낮고
+// 느리게 등) 다섯 액션이 전부 똑같은 톤으로 들리지 않게 한다.
+const VOICE_ACTION_CONFIG = {
+  check: { text: '체크', pitch: 0.55, rate: 1.05 },
+  call: { text: '콜', pitch: 0.6, rate: 1.1 },
+  raise: { text: '레이즈', pitch: 0.65, rate: 1.2 },
+  fold: { text: '폴드', pitch: 0.5, rate: 0.95 },
+  allin: { text: '올인', pitch: 0.4, rate: 0.85 },
+};
 let cachedTtsVoice = null;
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   window.speechSynthesis.onvoiceschanged = () => { cachedTtsVoice = null; };
@@ -58,6 +66,56 @@ function pickTtsVoice() {
   cachedTtsVoice = male || pool[0] || voices[0];
   return cachedTtsVoice;
 }
+// ---------- 올인 효과음 (별도 음원 파일 없이 Web Audio API로 직접 합성) ----------
+let audioCtx = null;
+function getAudioCtx() {
+  if (typeof window === 'undefined') return null;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!audioCtx) {
+    try { audioCtx = new Ctx(); } catch (e) { return null; }
+  }
+  if (audioCtx.state === 'suspended') {
+    try { audioCtx.resume(); } catch (e) { /* 무시 */ }
+  }
+  return audioCtx;
+}
+// 브라우저 오디오 정책상 사용자 제스처 없이는 소리가 나지 않으므로, 화면을 처음 탭하는
+// 순간 AudioContext를 미리 만들어(=잠금 해제) 실제 올인 순간에 지연 없이 바로 재생되게 한다.
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', getAudioCtx, { once: true, passive: true });
+  document.addEventListener('touchend', getAudioCtx, { once: true, passive: true });
+}
+// 올인 순간 짧게 긴장감을 주는 효과음. 낮은 톤 두 개를 살짝 어긋나게(디소넌스) 울리면서
+// 서서히 낮아지고 잦아들게 해 "쿵" 하는 긴장감을 낸다.
+function playAllInSting() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  try {
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.35, now + 0.03);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+    master.connect(ctx.destination);
+
+    [82, 87].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.6, now + 0.9);
+      const gain = ctx.createGain();
+      gain.gain.value = i === 0 ? 1 : 0.6;
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(now);
+      osc.stop(now + 0.95);
+    });
+  } catch (e) {
+    console.warn('[sfx] 올인 효과음 재생 실패:', e);
+  }
+}
+
 // 테이블에 있는 사람들이 전부 폴드/아웃해서 이번 핸드가 AI끼리만 진행 중이면
 // 아무도 듣지 않으므로 음성 안내를 생략한다.
 function humanStillInHandNow() {
@@ -69,13 +127,13 @@ function humanStillInHandNow() {
 // 실제 음성 합성 호출부. 예전에는 매번 speak() 전에 cancel()을 불렀는데, 일부 모바일
 // 브라우저에서는 cancel() 직후의 speak()가 내부적으로 씹혀버리는(아무 소리도 안 나는) 경우가
 // 보고되어 있어 제거했다 - 어차피 체크/레이즈/폴드는 짧은 한 단어라 자연스럽게 큐잉되어도 된다.
-function speakText(text) {
+function speakText(text, opts = {}) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
   try {
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
-    utter.pitch = 0.55; // 중저음 느낌을 위해 피치를 낮춤
-    utter.rate = 1.05;
+    utter.pitch = opts.pitch != null ? opts.pitch : 0.55; // 중저음 느낌을 위해 피치를 낮춤
+    utter.rate = opts.rate != null ? opts.rate : 1.05;
     const voice = pickTtsVoice();
     if (voice) utter.voice = voice;
     utter.onerror = (e) => {
@@ -90,10 +148,11 @@ function speakText(text) {
   }
 }
 function speakAction(record) {
-  const text = VOICE_ACTION_TEXT[record && record.actionType];
-  if (!text) return; // 체크/레이즈/폴드가 아니면 소리 없음
+  const cfg = VOICE_ACTION_CONFIG[record && record.actionType];
+  if (!cfg) return; // 체크/콜/레이즈/폴드/올인이 아니면(예: bet) 소리 없음
   if (!humanStillInHandNow()) return; // 사람이 모두 죽고 AI끼리만 진행 중이면 생략
-  speakText(text);
+  speakText(cfg.text, cfg);
+  if (record.actionType === 'allin') playAllInSting();
 }
 // 설정 화면의 "소리 테스트" 버튼에서 호출한다. 사용자가 직접 탭한 순간 곧바로 speak()를
 // 호출하므로, 브라우저의 오디오 정책과 무관하게 소리가 나는지 그 자리에서 확인할 수 있다.
@@ -101,14 +160,38 @@ function speakAction(record) {
 // 음성 합성(TTS) 엔진·한국어 음성 데이터가 설치되어 있지 않을 가능성이 크다.
 function testVoice() {
   ttsUnlocked = true;
-  const ok = speakText('체크, 레이즈, 폴드');
+  const ok = speakText('체크, 콜, 레이즈, 폴드, 올인', VOICE_ACTION_CONFIG.raise);
   if (!ok) toast('이 브라우저는 음성 합성을 지원하지 않아요');
+  playAllInSting();
 }
 
 let myPlayerId = localStorage.getItem('holdem_playerId') || null;
 let myRoomId = localStorage.getItem('holdem_roomId') || null;
 let latestState = null;
 let latestLobby = null;
+
+// ---------- 칩/BB 표시 토글 (팟이나 스택을 클릭하면 전환) ----------
+// 실제 베팅 금액(소켓으로 보내는 값)에는 전혀 영향을 주지 않고, 화면에 보여지는 문자열만 바꾼다.
+let chipDisplayMode = 'chips'; // 'chips' | 'bb'
+try {
+  chipDisplayMode = localStorage.getItem('holdem_chipDisplayMode') || 'chips';
+} catch (e) { /* 무시 */ }
+function currentBB() {
+  const bb = latestState && latestState.blindLevel && latestState.blindLevel.bb;
+  return bb > 0 ? bb : null;
+}
+function fmtChips(n) {
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  if (!bb) return fmt(n); // BB 모드라도 아직 블라인드 정보가 없으면 그냥 칩으로 표시
+  const bbValue = Math.round((Number(n || 0) / bb) * 10) / 10;
+  return `${bbValue.toLocaleString('ko-KR')}bb`;
+}
+function toggleChipDisplayMode() {
+  chipDisplayMode = chipDisplayMode === 'bb' ? 'chips' : 'bb';
+  try { localStorage.setItem('holdem_chipDisplayMode', chipDisplayMode); } catch (e) { /* 무시 */ }
+  if (latestState) renderTable();
+}
+el('pot-display').addEventListener('click', toggleChipDisplayMode);
 
 // 좌석별 트랜션트 액션 말풍선 상태: { [seatIndex]: { text, cls } }
 const activeBubbles = {};
@@ -184,13 +267,13 @@ el('btn-create-submit').addEventListener('click', () => {
     aiSkillLevel: Number(el('create-aiSkill').value),
     startingStack: Number(el('create-startingStack').value),
     rebuyAmount: Number(el('create-rebuyAmount').value),
-    startSb: Number(el('create-sb').value),
-    startBb: Number(el('create-bb').value),
-    levelDurationMinutes: Number(el('create-levelMinutes').value),
-    bbAnte: el('create-bbAnte').checked,
     maxRebuys: Number(el('create-maxRebuys').value),
     addOnAmount: Number(el('create-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('create-aiActionDelay').value) * 1000),
+    // 블라인드 구조("블라인드 구조 편집" 모달에서 편집)는 사용자가 한 번도 열지 않았다면
+    // null이고, 그 경우 서버가 기본 12단계 표를 그대로 사용한다.
+    blindLevels: currentBlindLevels || undefined,
+    bbAnte: currentBbAnte,
   };
   socket.emit('createRoom', opts, (res) => {
     if (!res.ok) return toast('방 생성 실패: ' + res.error);
@@ -277,14 +360,12 @@ function openSettingsModal() {
   const isLobby = currentStatus() === 'lobby';
 
   document.querySelectorAll('#settings-modal [data-lobby-only]').forEach((n) => n.classList.toggle('hidden', !isLobby));
+  document.querySelectorAll('#settings-modal [data-in-progress-only]').forEach((n) => n.classList.toggle('hidden', isLobby));
 
   el('set-aiCount').value = cfg.aiCount;
   el('set-aiCount-label').textContent = cfg.aiCount;
   el('set-startingStack').value = cfg.startingStack;
-  el('set-startSb').value = cfg.startSb;
-  el('set-startBb').value = cfg.startBb;
-  el('set-levelMinutes').value = cfg.levelDurationMinutes;
-  el('set-bbAnte').checked = cfg.bbAnte !== false;
+  renderBlindSummary('set-blind-summary', cfg.blindLevels);
   el('set-rebuyAmount').value = cfg.rebuyAmount;
   el('set-maxRebuys').value = cfg.maxRebuys;
   el('set-addOnAmount').value = cfg.addOnAmount;
@@ -313,21 +394,163 @@ el('btn-settings-save').addEventListener('click', () => {
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
     aiMistakeRate: Number(el('set-aiMistake').value) / 100,
     aiSkillLevel: Number(el('set-aiSkill').value),
-    // 블라인드 상승 주기(레벨당 지속시간)는 게임 진행 중에도 바꿀 수 있다 (지금 레벨은 유지한 채
-    // 그 순간부터 새 주기로 다시 카운트다운됨)
-    levelDurationMinutes: Number(el('set-levelMinutes').value),
   };
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
     patch.startingStack = Number(el('set-startingStack').value);
-    patch.startSb = Number(el('set-startSb').value);
-    patch.startBb = Number(el('set-startBb').value);
-    patch.bbAnte = el('set-bbAnte').checked;
   }
   socket.emit('updateSettings', patch, (res) => {
     if (!res.ok) return toast('설정 변경 실패: ' + res.error);
     toast('설정을 변경했어요');
     closeSettingsModal();
+  });
+});
+
+// ---------- 블라인드 구조 편집 (레벨 추가/삭제/개별 시간·금액 수정, 휴식 포함) ----------
+// 방 만들기 화면에서 아직 편집기를 한 번도 안 열었다면 null이고, 그 경우 서버가 기본
+// 12단계 표를 그대로 사용한다. 편집기에서 저장하면 이 값이 채워져 방 생성 시 함께 전송된다.
+let currentBlindLevels = null;
+let currentBbAnte = true;
+let blindEditorMode = 'create'; // 'create' | 'settings'
+let blindEditorDraft = [];
+
+// BlindStructure.generateDefaultLevels()와 동일한 기본 12단계 표 (서버와 동일하게 유지)
+function defaultBlindLevels(bbAnte) {
+  const sbAmounts = [100, 200, 300, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000];
+  return sbAmounts.map((sb) => ({
+    sb, bb: sb * 2, ante: bbAnte ? sb * 2 : 0, durationMinutes: 7, isBreak: false,
+  }));
+}
+function cloneLevels(levels) {
+  return (levels || []).map((lv) => ({ ...lv }));
+}
+
+function renderBlindSummary(elId, levels) {
+  const node = el(elId);
+  if (!node) return;
+  const list = Array.isArray(levels) && levels.length ? levels : defaultBlindLevels(true);
+  const realLevels = list.filter((lv) => !lv.isBreak);
+  const breakCount = list.length - realLevels.length;
+  const first = realLevels[0];
+  const last = realLevels[realLevels.length - 1];
+  let text = `레벨 ${list.length}개`;
+  if (breakCount > 0) text += ` (휴식 ${breakCount}회 포함)`;
+  if (first && last) text += ` · ${fmt(first.sb)}/${fmt(first.bb)} ~ ${fmt(last.sb)}/${fmt(last.bb)}`;
+  node.textContent = text;
+}
+renderBlindSummary('create-blind-summary', currentBlindLevels);
+
+function renderBlindEditorTable() {
+  const tbody = el('blind-editor-tbody');
+  tbody.innerHTML = '';
+  let cumulative = 0;
+  blindEditorDraft.forEach((lv, idx) => {
+    cumulative += Number(lv.durationMinutes) || 0;
+    const cumH = Math.floor(cumulative / 60);
+    const cumM = cumulative % 60;
+    const cumStr = `${cumH}:${String(cumM).padStart(2, '0')}`;
+    const tr = document.createElement('tr');
+    if (lv.isBreak) tr.className = 'break-row';
+    tr.innerHTML = `
+      <td>${idx + 1}${lv.isBreak ? ' (휴식)' : ''}</td>
+      <td><input type="number" min="1" value="${lv.durationMinutes}" data-field="durationMinutes" data-idx="${idx}" /></td>
+      <td class="cum-time">(${cumStr})</td>
+      <td>${lv.isBreak ? '-' : `<input type="number" min="1" step="100" value="${lv.sb}" data-field="sb" data-idx="${idx}" />`}</td>
+      <td>${lv.isBreak ? '-' : `<input type="number" min="2" step="100" value="${lv.bb}" data-field="bb" data-idx="${idx}" />`}</td>
+      <td>${lv.isBreak ? '-' : `<input type="number" min="0" step="100" value="${lv.ante}" data-field="ante" data-idx="${idx}" />`}</td>
+      <td><button type="button" class="btn-del-row" data-del-idx="${idx}">삭제</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// 입력칸에 타이핑하는 도중에는(=input 이벤트) 다시 그리지 않고 값만 갱신해서 커서/포커스가
+// 날아가지 않게 하고, 포커스를 벗어날 때(=change 이벤트)만 누적시간 등을 다시 계산해 보여준다.
+el('blind-editor-tbody').addEventListener('input', (e) => {
+  const t = e.target;
+  if (!t.dataset || t.dataset.idx == null) return;
+  const idx = Number(t.dataset.idx);
+  const field = t.dataset.field;
+  if (!blindEditorDraft[idx]) return;
+  const n = Number(t.value);
+  blindEditorDraft[idx][field] = Number.isFinite(n) ? n : 0;
+});
+el('blind-editor-tbody').addEventListener('change', () => renderBlindEditorTable());
+el('blind-editor-tbody').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.delIdx != null) {
+    blindEditorDraft.splice(Number(t.dataset.delIdx), 1);
+    renderBlindEditorTable();
+  }
+});
+
+function lastRealLevel() {
+  for (let i = blindEditorDraft.length - 1; i >= 0; i--) {
+    if (!blindEditorDraft[i].isBreak) return blindEditorDraft[i];
+  }
+  return null;
+}
+el('btn-blind-add-level').addEventListener('click', () => {
+  const prev = lastRealLevel();
+  const bbAnte = el('blind-editor-bbAnte').checked;
+  const sb = prev ? prev.sb * 2 : 100;
+  const bb = sb * 2;
+  blindEditorDraft.push({ sb, bb, ante: bbAnte ? bb : 0, durationMinutes: 7, isBreak: false });
+  renderBlindEditorTable();
+});
+el('btn-blind-add-break').addEventListener('click', () => {
+  blindEditorDraft.push({ isBreak: true, durationMinutes: 5, sb: null, bb: null, ante: 0 });
+  renderBlindEditorTable();
+});
+el('btn-blind-reset-default').addEventListener('click', () => {
+  blindEditorDraft = defaultBlindLevels(el('blind-editor-bbAnte').checked);
+  renderBlindEditorTable();
+});
+el('blind-editor-bbAnte').addEventListener('change', (e) => {
+  const on = e.target.checked;
+  blindEditorDraft = blindEditorDraft.map((lv) => (lv.isBreak ? lv : { ...lv, ante: on ? lv.bb : 0 }));
+  renderBlindEditorTable();
+});
+
+function openBlindEditor(mode) {
+  blindEditorMode = mode;
+  let sourceLevels;
+  let bbAnteChecked;
+  if (mode === 'settings') {
+    const cfg = currentConfig();
+    if (!cfg || !amIHost()) return;
+    sourceLevels = cfg.blindLevels && cfg.blindLevels.length ? cfg.blindLevels : defaultBlindLevels(cfg.bbAnte !== false);
+    bbAnteChecked = cfg.bbAnte !== false;
+  } else {
+    sourceLevels = currentBlindLevels && currentBlindLevels.length ? currentBlindLevels : defaultBlindLevels(currentBbAnte);
+    bbAnteChecked = currentBbAnte;
+  }
+  blindEditorDraft = cloneLevels(sourceLevels);
+  el('blind-editor-bbAnte').checked = bbAnteChecked;
+  renderBlindEditorTable();
+  el('blind-editor-modal').classList.remove('hidden');
+}
+function closeBlindEditor() {
+  el('blind-editor-modal').classList.add('hidden');
+}
+el('btn-open-blind-editor-create').addEventListener('click', () => openBlindEditor('create'));
+el('btn-open-blind-editor-settings').addEventListener('click', () => openBlindEditor('settings'));
+el('btn-blind-editor-cancel').addEventListener('click', closeBlindEditor);
+el('btn-blind-editor-save').addEventListener('click', () => {
+  if (!blindEditorDraft.length) return toast('레벨이 최소 1개는 있어야 해요');
+  const levels = cloneLevels(blindEditorDraft);
+  const bbAnte = el('blind-editor-bbAnte').checked;
+  if (blindEditorMode === 'create') {
+    currentBlindLevels = levels;
+    currentBbAnte = bbAnte;
+    renderBlindSummary('create-blind-summary', currentBlindLevels);
+    closeBlindEditor();
+    return;
+  }
+  socket.emit('updateSettings', { blindLevels: levels, bbAnte }, (res) => {
+    if (!res.ok) return toast('블라인드 구조 저장 실패: ' + res.error);
+    toast('블라인드 구조를 저장했어요');
+    closeBlindEditor();
   });
 });
 
@@ -469,8 +692,8 @@ function openAiRebuyConfirm(seatIndex) {
   const canRebuy = used < cfg.maxRebuys;
   pendingAiRebuySeat = seatIndex;
   el('ai-rebuy-msg').textContent = canRebuy
-    ? `${s.displayName}이(가) 파산했습니다. 리바인시켜서 계속 플레이하게 할까요? (리바인 ${used}/${cfg.maxRebuys}회 사용, 리바인 시 칩 ${fmt(cfg.rebuyAmount)})`
-    : `${s.displayName}은(는) 최대 리바인 횟수(${cfg.maxRebuys}회)를 모두 사용해 더 이상 리바인할 수 없습니다.`;
+    ? `${s.displayName}이(가) 파산했습니다. 리바인시켜서 계속 플레이하게 할까요? (리바인 ${used}/${cfg.maxRebuys}회 사용, 리바인 시 칩 ${fmt(cfg.rebuyAmount)}) 리바인 없이 이 자리에서 완전히 내보낼 수도 있어요.`
+    : `${s.displayName}은(는) 최대 리바인 횟수(${cfg.maxRebuys}회)를 모두 사용해 더 이상 리바인할 수 없습니다. 내보내기만 가능합니다.`;
   el('btn-ai-rebuy-yes').classList.toggle('hidden', !canRebuy);
   el('ai-rebuy-modal').classList.remove('hidden');
 }
@@ -479,6 +702,16 @@ el('btn-ai-rebuy-yes').addEventListener('click', () => {
   if (pendingAiRebuySeat == null) return;
   socket.emit('aiRebuyDecision', { seatIndex: pendingAiRebuySeat, accept: true }, (res) => {
     if (!res.ok) toast(res.error || '리바인 실패');
+  });
+  el('ai-rebuy-modal').classList.add('hidden');
+  pendingAiRebuySeat = null;
+});
+// 리바인을 시키지 않고, 그렇다고 나중으로 미루지도 않고(=닫기), 아예 이 자리에서 영구히
+// 내보낸다(좌석 자체가 사라짐). "닫기"는 결정을 미루는 것이고 이건 확정적인 제거라는 점이 다르다.
+el('btn-ai-rebuy-remove').addEventListener('click', () => {
+  if (pendingAiRebuySeat == null) return;
+  socket.emit('aiRemoveDecision', { seatIndex: pendingAiRebuySeat }, (res) => {
+    if (!res.ok) toast(res.error || '내보내기 실패');
   });
   el('ai-rebuy-modal').classList.add('hidden');
   pendingAiRebuySeat = null;
@@ -517,8 +750,10 @@ el('btn-leave').addEventListener('click', () => {
 function renderBlindInfo() {
   const level = blindTickBase ? blindTickBase.level : latestState && latestState.blindLevel;
   if (!level) return;
-  let line1 = `블라인드 ${fmt(level.sb)}/${fmt(level.bb)}`;
-  if (level.ante > 0) line1 += ` (BB 앤티 ${fmt(level.ante)})`;
+  let line1 = level.isBreak
+    ? `휴식 (블라인드 ${fmt(level.sb)}/${fmt(level.bb)} 유지)`
+    : `블라인드 ${fmt(level.sb)}/${fmt(level.bb)}`;
+  if (!level.isBreak && level.ante > 0) line1 += ` (BB 앤티 ${fmt(level.ante)})`;
   let line2 = '';
   if (level.msRemaining != null && !level.isFinalLevel) {
     const elapsed = blindTickBase ? Date.now() - blindTickBase.receivedAt : 0;
@@ -553,8 +788,20 @@ function cardEl(str, faceDown) {
   }
   const rank = str.slice(0, -1);
   const suit = str.slice(-1);
-  div.className = 'playing-card' + (RED_SUITS.has(suit) ? ' red' : '');
-  div.textContent = `${rank}${SUIT_SYMBOL[suit] || ''}`;
+  // 클로버(♣)와 스페이드(♠)가 둘 다 검은색이라 구분이 잘 안 된다는 피드백이 있어,
+  // 클로버만 별도 색(진한 녹색)을 줘서 세 가지 색(빨강/검정/녹색)으로 구분되게 한다.
+  const suitClass = suit === 'c' ? 'club' : RED_SUITS.has(suit) ? 'red' : '';
+  div.className = `playing-card${suitClass ? ' ' + suitClass : ''}`;
+  // 숫자 랭크(2~10)와 문자 랭크(J/Q/K/A)가 폰트에 따라 높이가 달라 보이는 문제가 있어,
+  // 랭크와 무늬를 별도 span으로 나누고 line-height/폰트를 CSS에서 고정한다.
+  const rankSpan = document.createElement('span');
+  rankSpan.className = 'card-rank';
+  rankSpan.textContent = rank;
+  const suitSpan = document.createElement('span');
+  suitSpan.className = 'card-suit';
+  suitSpan.textContent = SUIT_SYMBOL[suit] || '';
+  div.appendChild(rankSpan);
+  div.appendChild(suitSpan);
   return div;
 }
 
@@ -569,7 +816,7 @@ function renderTable() {
 
   lastRenderedHandNumber = state.handNumber;
   renderBlindInfo();
-  el('pot-display').textContent = state.pot ? `팟 ${fmt(state.pot)}` : '';
+  el('pot-display').textContent = state.pot ? `팟 ${fmtChips(state.pot)}` : '';
 
   const board = el('board-cards');
   board.innerHTML = '';
@@ -595,6 +842,19 @@ function renderTable() {
   let startOffset = occupied.findIndex((s) => s.idx === mySeat);
   if (startOffset === -1) startOffset = 0;
   const K = occupied.length;
+
+  // 칩리더(현재 스택이 가장 많은 사람)에게 왕관 표시를 붙인다. 2명 이상 있어야 의미가
+  // 있고, 파산한(스택 0) 좌석은 애초에 리더가 될 수 없다.
+  let chipLeaderIdx = null;
+  if (K >= 2) {
+    const withChips = occupied.filter((s) => s.stack > 0);
+    if (withChips.length >= 2) {
+      const maxStack = Math.max(...withChips.map((s) => s.stack));
+      // 동률이면(공동 1위) 누구 하나를 콕 집어 왕관을 주는 게 오히려 어색하므로 생략한다.
+      const leaders = withChips.filter((s) => s.stack === maxStack);
+      if (leaders.length === 1) chipLeaderIdx = leaders[0].idx;
+    }
+  }
 
   occupied.forEach((s, i) => {
     const order = (i - startOffset + K) % K;
@@ -631,7 +891,8 @@ function renderTable() {
 
     const plate = document.createElement('div');
     plate.className = 'name-plate';
-    plate.innerHTML = `${escapeHtml(s.displayName)}${s.idx === mySeat ? ' (나)' : ''}`;
+    const crown = s.idx === chipLeaderIdx ? '<span class="crown" title="칩리더">👑</span>' : '';
+    plate.innerHTML = `${crown}${escapeHtml(s.displayName)}${s.idx === mySeat ? ' (나)' : ''}`;
     if (s.position) {
       const badge = document.createElement('span');
       badge.className = 'pos-badge';
@@ -642,13 +903,15 @@ function renderTable() {
 
     const stackDiv = document.createElement('div');
     stackDiv.className = 'stack';
-    stackDiv.textContent = `칩 ${fmt(s.stack)}${s.allIn ? ' (올인)' : ''}`;
+    stackDiv.textContent = `칩 ${fmtChips(s.stack)}${s.allIn ? ' (올인)' : ''}`;
+    stackDiv.addEventListener('click', (e) => { e.stopPropagation(); toggleChipDisplayMode(); });
     seatDiv.appendChild(stackDiv);
 
     if (s.committedThisStreet > 0) {
       const bet = document.createElement('div');
       bet.className = 'bet-chip';
-      bet.textContent = `베팅 ${fmt(s.committedThisStreet)}`;
+      bet.textContent = `베팅 ${fmtChips(s.committedThisStreet)}`;
+      bet.addEventListener('click', (e) => { e.stopPropagation(); toggleChipDisplayMode(); });
       seatDiv.appendChild(bet);
     }
 

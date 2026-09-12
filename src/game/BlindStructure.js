@@ -1,42 +1,75 @@
 'use strict';
 
-// 사용자가 제공한 실제 홈게임 블라인드표(브레이크 제외)를 그대로 따르는 배율표.
-// 100/200을 기준으로 한 배율이며, 매 레벨 정확히 2배씩 오르지 않고
-// (100→200→300→500→1000→2000→3000→4000→5000→6000→8000→10000) 실제 표와 동일하게 상승한다.
-const SB_MULTIPLIERS = [1, 2, 3, 5, 10, 20, 30, 40, 50, 60, 80, 100];
+// 블라인드 구조를 레벨 단위로 완전히 커스텀할 수 있게 관리한다. 각 레벨은
+// { sb, bb, ante, durationMinutes, isBreak } 형태이며, 호스트가 로비에서 레벨을
+// 자유롭게 추가/삭제/수정할 수 있다(금액, 시간, 앤티 전부 개별 설정 가능).
+// "휴식(브레이크)" 레벨은 블라인드 변경 없이(sb/bb/ante 없음) 그 시간만큼 시계가 흘러가는
+// 표시용 구간으로, 실제 게임에는 직전 레벨의 블라인드가 그대로 적용된다(핸드 진행이
+// 자동으로 멈추지는 않는다 - 쉬는 시간임을 화면에 표시해줄 뿐).
 
-// startSb/startBb를 기준으로 위 배율표를 그대로 적용해 레벨을 생성한다.
-// 모든 레벨의 지속시간은 공통(levelDurationMinutes)으로 동일하게 적용한다(레벨별 개별 시간 없음).
-// bbAnte가 true면 "BB 앤티" 방식(빅블라인드 좌석 한 명이 그 레벨의 빅블라인드와 동일한 금액을 추가로 혼자 냄)으로
-// 각 레벨의 ante가 그 레벨의 bb와 같은 값으로 채워지고, false면 앤티 없이 0으로 유지된다.
-function generateDefaultStructure(startSb = 100, startBb = 200, count = SB_MULTIPLIERS.length, bbAnte = true) {
-  const levels = [];
-  const ratio = startBb / startSb;
-  const n = Math.max(1, Math.min(count, SB_MULTIPLIERS.length));
-  for (let i = 0; i < n; i++) {
-    const sb = Math.round(startSb * SB_MULTIPLIERS[i]);
-    const bb = Math.round(sb * ratio);
-    levels.push({ level: i + 1, sb, bb, ante: bbAnte ? bb : 0 });
-  }
-  return levels;
+// 방을 처음 만들 때 쓰이는 기본 12단계 표 (사용자가 제공한 실제 홈게임 블라인드표 기준).
+// bbAnte가 true면 모든 레벨의 ante를 그 레벨의 bb와 동일하게 채운다.
+function generateDefaultLevels(bbAnte = true, durationMinutes = 7) {
+  const sbAmounts = [100, 200, 300, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000];
+  return sbAmounts.map((sb) => ({
+    sb,
+    bb: sb * 2,
+    ante: bbAnte ? sb * 2 : 0,
+    durationMinutes,
+    isBreak: false,
+  }));
+}
+
+// 레벨 배열을 정규화한다: level 번호를 1부터 다시 매기고, 숫자 필드를 안전한 범위로 정리하며,
+// 브레이크가 아닌 레벨에 sb/bb가 없으면 기본값을 채운다.
+function normalizeLevels(levels) {
+  const list = Array.isArray(levels) && levels.length ? levels : generateDefaultLevels();
+  return list.map((lv, i) => {
+    const isBreak = !!(lv && lv.isBreak);
+    const durationMinutes = Math.max(1, Math.round(Number(lv && lv.durationMinutes) || 5));
+    if (isBreak) {
+      return { level: i + 1, isBreak: true, durationMinutes, sb: null, bb: null, ante: 0 };
+    }
+    const sb = Math.max(1, Math.round(Number(lv && lv.sb) || 100));
+    const bb = Math.max(sb + 1, Math.round(Number(lv && lv.bb) || sb * 2));
+    const ante = Math.max(0, Math.round(Number(lv && lv.ante) || 0));
+    return { level: i + 1, isBreak: false, durationMinutes, sb, bb, ante };
+  });
+}
+
+// 브레이크 레벨은 자체 sb/bb/ante가 없으므로, 실제 게임에 적용할 "유효 블라인드"를
+// 직전 실제 레벨(브레이크가 아닌 레벨)에서 이어받아 채워준다. 맨 앞이 브레이크인
+// 극단적인 경우(정상적으로는 생기지 않아야 함)에는 0으로 둔다.
+function withEffectiveBlinds(levels) {
+  let lastReal = { sb: 0, bb: 0, ante: 0 };
+  return levels.map((lv) => {
+    if (!lv.isBreak) {
+      lastReal = { sb: lv.sb, bb: lv.bb, ante: lv.ante };
+      return { ...lv, effSb: lv.sb, effBb: lv.bb, effAnte: lv.ante };
+    }
+    return { ...lv, effSb: lastReal.sb, effBb: lastReal.bb, effAnte: lastReal.ante };
+  });
 }
 
 class BlindStructure {
   /**
-   * @param {Array} [levels] - 직접 레벨 테이블을 주입(옵션). 없으면 startSb/startBb로 기본 생성.
-   * @param {number} [levelDurationMinutes] - 모든 레벨에 공통으로 적용되는 지속시간(분). 0이면 블라인드 고정(승급 없음). 기본 5분
-   * @param {number} [startSb] - 1레벨 스몰블라인드. 기본 100
-   * @param {number} [startBb] - 1레벨 빅블라인드. 기본 200
-   * @param {boolean} [bbAnte] - true(기본값)면 각 레벨의 앤티를 그 레벨의 bb와 동일하게 채움(BB 앤티 방식), false면 앤티 없음
+   * @param {Array} [levels] - 레벨 배열. 각 항목은 { sb, bb, ante, durationMinutes, isBreak }.
+   *   생략하면 기본 12단계 표가 사용된다.
+   * @param {boolean} [bbAnte] - 레벨을 생성할 때(레벨을 직접 안 주고 기본표를 쓸 때)만 참고하는
+   *   힌트값. 실제 앤티 금액은 각 레벨의 ante 필드가 갖고 있으므로, 레벨을 직접 준 경우 이
+   *   값은 무시된다.
    */
-  constructor({ levels, levelDurationMinutes = 5, startSb = 100, startBb = 200, bbAnte = true } = {}) {
+  constructor({ levels, bbAnte = true } = {}) {
     this.bbAnte = bbAnte !== false;
-    this.levels = levels && levels.length ? levels : generateDefaultStructure(startSb, startBb, SB_MULTIPLIERS.length, this.bbAnte);
-    this.levelDurationMinutes = levelDurationMinutes;
+    this.levels = withEffectiveBlinds(normalizeLevels(levels && levels.length ? levels : generateDefaultLevels(this.bbAnte)));
     this.startedAt = null;
-    // 상승 주기가 0(고정)일 때 "몇 레벨에서 고정할지"를 기억해두는 값. 게임 시작 전에는 항상
-    // 0(레벨1)이지만, 게임 도중에 상승 주기를 0으로 바꾸면 지금 레벨에서 그대로 고정되어야
-    // 하므로(레벨1로 되돌아가면 안 됨) setLevelDurationMinutes()가 이 값을 갱신한다.
+    // 게임 시작 전(로비)이거나 승급이 없는 상태일 때 "몇 번째 레벨에 머무를지"를 기억해두는 값.
+    this.frozenLevelIndex = 0;
+  }
+
+  // 호스트가 로비에서 레벨을 추가/삭제/수정한 뒤 구조 전체를 교체할 때 사용한다.
+  replaceLevels(levels) {
+    this.levels = withEffectiveBlinds(normalizeLevels(levels));
     this.frozenLevelIndex = 0;
   }
 
@@ -45,48 +78,49 @@ class BlindStructure {
   }
 
   isEscalating() {
-    return !!this.levelDurationMinutes && this.levelDurationMinutes > 0;
+    return this.levels.length > 1;
   }
 
   currentLevelIndex(now = Date.now()) {
-    if (!this.isEscalating() || this.startedAt == null) {
+    if (this.startedAt == null) {
       return Math.min(this.frozenLevelIndex || 0, this.levels.length - 1);
     }
-    const elapsedMin = (now - this.startedAt) / 60000;
-    const idx = Math.floor(elapsedMin / this.levelDurationMinutes);
-    return Math.min(idx, this.levels.length - 1);
+    if (!this.isEscalating()) return 0;
+    let remaining = (now - this.startedAt) / 60000;
+    for (let i = 0; i < this.levels.length - 1; i++) {
+      const dur = this.levels[i].durationMinutes;
+      if (remaining < dur) return i;
+      remaining -= dur;
+    }
+    return this.levels.length - 1;
   }
 
-  // 게임 진행 중에 상승 주기(레벨당 지속시간)만 바꿀 때 사용한다. 기존 startedAt 기준으로
-  // 그대로 새 주기를 나눠버리면 레벨이 갑자기 앞뒤로 튈 수 있으므로(예: 15분 주기로 12분
-  // 경과한 상태에서 5분으로 바꾸면 레벨이 2단계나 건너뛰어 버림), 지금 레벨은 그대로 유지한
-  // 채 이 순간부터 새 주기로 다시 카운트다운을 시작한 것처럼 startedAt을 재계산한다.
-  setLevelDurationMinutes(newDurationMinutes, now = Date.now()) {
-    const duration = Math.max(0, Number(newDurationMinutes) || 0);
-    if (this.startedAt == null) {
-      // 아직 게임이 시작되지 않았다면(로비) 타이머 기준점이 없으므로 값만 바꾸면 충분하다.
-      this.levelDurationMinutes = duration;
-      return;
-    }
-    const currentIdx = this.currentLevelIndex(now);
-    this.levelDurationMinutes = duration;
-    this.frozenLevelIndex = currentIdx;
-    if (duration > 0) {
-      this.startedAt = now - currentIdx * duration * 60000;
-    }
+  // 주어진 시각까지 "이번 레벨 안에서" 얼마나 시간이 지났는지(분). getCurrent()의 남은 시간
+  // 계산과, 도중에 구조가 바뀌었을 때 지금 레벨을 유지시키는 계산에 함께 쓰인다.
+  _elapsedWithinLevel(idx, now) {
+    let elapsedMin = (now - this.startedAt) / 60000;
+    for (let i = 0; i < idx; i++) elapsedMin -= this.levels[i].durationMinutes;
+    return elapsedMin;
   }
 
   getCurrent(now = Date.now()) {
     const idx = this.currentLevelIndex(now);
     const level = this.levels[idx];
     let msRemaining = null;
-    if (this.isEscalating() && this.startedAt != null && idx < this.levels.length - 1) {
-      const levelMs = this.levelDurationMinutes * 60000;
-      const elapsed = now - this.startedAt;
-      msRemaining = levelMs - (elapsed % levelMs);
+    const isFinalLevel = idx === this.levels.length - 1;
+    if (this.startedAt != null && this.isEscalating() && !isFinalLevel) {
+      const elapsedWithin = this._elapsedWithinLevel(idx, now);
+      msRemaining = Math.max(0, (level.durationMinutes - elapsedWithin) * 60000);
     }
-    return { ...level, msRemaining, isFinalLevel: idx === this.levels.length - 1 };
+    return {
+      ...level,
+      sb: level.effSb,
+      bb: level.effBb,
+      ante: level.effAnte,
+      msRemaining,
+      isFinalLevel,
+    };
   }
 }
 
-module.exports = { BlindStructure, generateDefaultStructure, SB_MULTIPLIERS };
+module.exports = { BlindStructure, generateDefaultLevels, normalizeLevels };

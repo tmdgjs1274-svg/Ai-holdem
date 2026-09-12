@@ -2,9 +2,12 @@
 
 const EventEmitter = require('events');
 const { GameEngine } = require('../game/GameEngine');
-const { BlindStructure } = require('../game/BlindStructure');
+const { BlindStructure, generateDefaultLevels } = require('../game/BlindStructure');
 const { decideAction } = require('../ai/AIDecisionEngine');
 const { cardToString } = require('../game/Deck');
+
+// 블라인드 구조에 한 번에 넣을 수 있는 레벨 수 상한(휴식 포함). 실수로 수백 개를 넣는 것을 방지.
+const MAX_BLIND_LEVELS = 60;
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 혼동되는 0/O, 1/I 제외
 
@@ -20,13 +23,13 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
-  'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'startSb', 'startBb',
-  'levelDurationMinutes', 'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
+  'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'blindLevels',
+  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
   'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
-  'interHandDelayMs', 'levelDurationMinutes',
+  'interHandDelayMs',
 ]);
 
 // 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
@@ -46,10 +49,11 @@ class TableManager extends EventEmitter {
    * @param {number} [config.maxSeats] 기본 9
    * @param {number} config.startingStack
    * @param {number} config.rebuyAmount
-   * @param {number} [config.startSb] 1레벨 스몰블라인드, 기본 100
-   * @param {number} [config.startBb] 1레벨 빅블라인드, 기본 200
-   * @param {number} [config.levelDurationMinutes] 모든 레벨 공통 지속시간(분). 0이면 블라인드 고정, 기본 15
-   * @param {boolean} [config.bbAnte] BB 앤티(빅블라인드 좌석이 그 레벨 bb만큼 추가로 혼자 냄) 사용 여부, 기본 true
+   * @param {Array} [config.blindLevels] 블라인드 구조(레벨 배열). 각 항목은
+   *   { sb, bb, ante, durationMinutes, isBreak }. 생략하면 기본 12단계 표가 사용된다.
+   *   레벨 추가/삭제/개별 금액·시간 수정은 로비에서만 가능하다(BlindStructure 참고).
+   * @param {boolean} [config.bbAnte] BB 앤티(빅블라인드 좌석이 그 레벨 bb만큼 추가로 혼자 냄) 사용 여부, 기본 true.
+   *   레벨을 직접 준 경우에는 각 레벨의 ante 값이 우선하며, 이 값은 기본표 생성 시에만 쓰인다.
    * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
    * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
@@ -79,10 +83,6 @@ class TableManager extends EventEmitter {
       allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
       aiCount: Math.max(0, Math.min(config.aiCount || 0, this.maxSeats - 1)),
       bbAnte: config.bbAnte !== false,
-      // 아래 2개는 블라인드 구조 표시용 미러(mirror) 필드 — 실제 값은 this.blinds가 갖고 있음
-      startSb: config.startSb || 100,
-      startBb: config.startBb || 200,
-      levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 5,
     };
 
     this.rng = config.rng || Math.random;
@@ -93,11 +93,11 @@ class TableManager extends EventEmitter {
     this.engine.on('action', (record) => this.emit('playerAction', record));
 
     this.blinds = new BlindStructure({
-      startSb: this.config.startSb,
-      startBb: this.config.startBb,
-      levelDurationMinutes: this.config.levelDurationMinutes,
+      levels: config.blindLevels && config.blindLevels.length ? config.blindLevels : generateDefaultLevels(this.config.bbAnte),
       bbAnte: this.config.bbAnte,
     });
+    // 화면 표시/재구성용으로 정규화된 레벨 배열을 config에도 미러링해둔다(실제 소스는 this.blinds).
+    this.config.blindLevels = this.blinds.levels;
     this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
 
     this.status = 'lobby'; // lobby | in_progress | closed
@@ -295,33 +295,27 @@ class TableManager extends EventEmitter {
     if ('rebuyAmount' in applied) {
       this.config.rebuyAmount = Math.max(100, Number(applied.rebuyAmount) || this.config.rebuyAmount);
     }
-    if (
-      ('startSb' in applied || 'startBb' in applied || 'levelDurationMinutes' in applied || 'bbAnte' in applied) &&
-      this.status === 'lobby'
-    ) {
-      const cur = this.blinds.levels[0];
-      const sb = 'startSb' in applied ? Math.max(1, Number(applied.startSb) || cur.sb) : this.config.startSb;
-      const bb = 'startBb' in applied ? Math.max(2, Number(applied.startBb) || cur.bb) : this.config.startBb;
-      const levelDurationMinutes =
-        'levelDurationMinutes' in applied
-          ? Math.max(0, Number(applied.levelDurationMinutes) || 0)
-          : this.config.levelDurationMinutes;
-      const bbAnte = 'bbAnte' in applied ? applied.bbAnte !== false : this.config.bbAnte;
-      this.blinds = new BlindStructure({ startSb: sb, startBb: bb, levelDurationMinutes, bbAnte });
-      this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
-      this.config.startSb = sb;
-      this.config.startBb = bb;
-      this.config.levelDurationMinutes = levelDurationMinutes;
-      this.config.bbAnte = bbAnte;
+    // 블라인드 구조(레벨 추가/삭제/개별 금액·시간 수정)는 로비에서만 통째로 교체할 수 있다.
+    // 이미 게임이 시작된 뒤에 레벨을 넣고 빼면 "지금 몇 번째 레벨인지"가 불분명해지므로,
+    // 실제 토너먼트 클럭처럼 시작 전에 구조를 확정하도록 한다.
+    if ('blindLevels' in applied && this.status === 'lobby') {
+      const incoming = Array.isArray(applied.blindLevels) ? applied.blindLevels.slice(0, MAX_BLIND_LEVELS) : [];
+      if (incoming.length > 0) {
+        this.blinds.replaceLevels(incoming);
+        this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
+        this.config.blindLevels = this.blinds.levels;
+      }
     }
-    // 블라인드 상승 주기(레벨당 지속시간)는 게임이 이미 진행 중이어도 바꿀 수 있다(시작
-    // 블라인드 액수/BB 앤티는 로비에서만 변경 가능한 것과 다름). 지금 몇 레벨인지는 그대로
-    // 유지한 채, 그 순간부터 새 주기로 다시 카운트다운을 시작한다(BlindStructure에서 처리).
-    if ('levelDurationMinutes' in applied && this.status === 'in_progress') {
-      const levelDurationMinutes = Math.max(0, Number(applied.levelDurationMinutes) || 0);
-      this.blinds.setLevelDurationMinutes(levelDurationMinutes);
-      this.config.levelDurationMinutes = levelDurationMinutes;
-      this._applyBlindLevel(); // 다음 핸드까지 기다리지 않고 즉시 새 레벨 정보를 반영/브로드캐스트
+    // "BB 앤티 사용유무" 체크박스: 구조 편집기를 따로 열지 않고도 모든 (휴식이 아닌) 레벨의
+    // 앤티를 한 번에 켜고 끌 수 있는 일괄 적용 스위치. 이후에도 편집기에서 레벨별로 다시
+    // 개별 수정할 수 있다.
+    if ('bbAnte' in applied && this.status === 'lobby') {
+      const bbAnte = applied.bbAnte !== false;
+      this.config.bbAnte = bbAnte;
+      const newLevels = this.blinds.levels.map((lv) => (lv.isBreak ? lv : { ...lv, ante: bbAnte ? lv.bb : 0 }));
+      this.blinds.replaceLevels(newLevels);
+      this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
+      this.config.blindLevels = this.blinds.levels;
     }
     if ('aiMistakeRate' in applied) {
       this.config.aiMistakeRate = Math.max(0, Math.min(0.4, Number(applied.aiMistakeRate)));
@@ -764,6 +758,29 @@ class TableManager extends EventEmitter {
       this._playNextHand();
     }
     return { seatIndex, accepted: true, stack: newStack };
+  }
+
+  // 파산해서 비활성화된 AI 좌석을, 리바인시키지도 않고 "닫기"로 결정을 미루지도 않고
+  // 아예 그 자리에서 영구히 내보낸다(좌석 자체가 사라짐). maxRebuys 초과로 자동 제거되는
+  // 경로(_onHandEnd)와 동일하게 좌석을 완전히 비운다는 점은 같지만, 이건 아직 리바인 여지가
+  // 남아있는 AI를 사람이 스스로 원해서 내보내는 경우다.
+  handleAiRemoveDecision(playerId, seatIndex) {
+    if (this.status !== 'in_progress') throw new Error('게임 진행 중에만 가능합니다');
+    if (this.seatByPlayer[playerId] == null) throw new Error('참가자를 찾을 수 없습니다');
+    const seat = this.engine.seats[seatIndex];
+    if (!seat || seat.type !== 'ai') throw new Error('AI 좌석이 아닙니다');
+    if (seat.stack > 0 || !seat.isSittingOut) throw new Error('내보낼 수 있는 상태가 아닙니다');
+
+    this.engine.removeSeat(seatIndex);
+    delete this.rebuyCounts[seatIndex];
+    this.emit('rebuyResult', { seatIndex, accepted: false, reason: 'removedByHost' });
+    this._broadcastState();
+
+    if (this._awaitingAiRebuy) {
+      this._awaitingAiRebuy = false;
+      this._playNextHand();
+    }
+    return { seatIndex, removed: true };
   }
 
   _closeRoom(reason) {

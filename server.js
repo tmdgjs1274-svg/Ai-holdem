@@ -103,9 +103,9 @@ io.on('connection', (socket) => {
         aiCount: clampInt(opts && opts.aiCount, 0, 8, 3),
         startingStack: clampInt(opts && opts.startingStack, 100, 10000000, 20000),
         rebuyAmount: clampInt(opts && opts.rebuyAmount, 100, 10000000, 30000),
-        startSb: clampInt(opts && opts.startSb, 1, 100000, 100),
-        startBb: clampInt(opts && opts.startBb, 2, 200000, 200),
-        levelDurationMinutes: clampInt(opts && opts.levelDurationMinutes, 0, 180, 5),
+        // 블라인드 구조(레벨별 sb/bb/ante/시간, 휴식 포함)는 클라이언트가 편집한 배열을 그대로
+        // 받는다. 세부 검증/정규화는 BlindStructure가 담당하므로 여기서는 개수만 제한한다.
+        blindLevels: Array.isArray(opts && opts.blindLevels) ? opts.blindLevels.slice(0, 60) : undefined,
         bbAnte: opts ? opts.bbAnte !== false : true,
         aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
         aiSkillLevel: clampInt(opts && opts.aiSkillLevel, 0, 100, 75),
@@ -191,6 +191,13 @@ io.on('connection', (socket) => {
   socket.on('aiRebuyDecision', ({ seatIndex, accept }, cb) => {
     withTable(socket, cb, (table, meta) => {
       const result = table.handleAiRebuyDecision(meta.playerId, seatIndex, !!accept);
+      cb && cb({ ok: true, result });
+    });
+  });
+
+  socket.on('aiRemoveDecision', ({ seatIndex }, cb) => {
+    withTable(socket, cb, (table, meta) => {
+      const result = table.handleAiRemoveDecision(meta.playerId, seatIndex);
       cb && cb({ ok: true, result });
     });
   });

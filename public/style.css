@@ -156,14 +156,21 @@ input[type=range] { width: 100%; }
   60% { transform: rotateY(-12deg) scale(1.03); opacity: 1; }
   to { transform: rotateY(0deg) scale(1); opacity: 1; }
 }
-.pot-display { position: static; transform: none; font-size: 14px; color: #e2b93b; font-weight: 700; white-space: nowrap; }
+.pot-display { position: static; transform: none; font-size: 14px; color: #e2b93b; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.pot-display:empty { cursor: default; }
 
 .playing-card {
   width: 34px; height: 48px; border-radius: 5px; background: #fff; color: #111;
-  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px;
+  display: flex; align-items: center; justify-content: center; gap: 1px; font-weight: 700; font-size: 15px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+  /* 숫자(2~10)와 영문(J/Q/K/A) 랭크가 한국어 폴백 폰트(맑은 고딕 등)에서 서로 높이가
+     다르게 렌더링되는 문제가 있어, 카드 안 글자만은 라틴 문자용 폰트로 고정한다. */
+  font-family: Arial, Helvetica, "Segoe UI", sans-serif;
 }
+.playing-card .card-rank, .playing-card .card-suit { line-height: 1; }
 .playing-card.red { color: #c0392b; }
+/* 클로버(♣)는 스페이드(♠)와 구분되도록 진한 녹색을 준다(나머지는 기존처럼 검정/빨강 2색) */
+.playing-card.club { color: #1f7a3d; }
 .playing-card.back { background: repeating-linear-gradient(45deg, #2a3f8f, #2a3f8f 4px, #1d2c66 4px, #1d2c66 8px); }
 
 .seat {
@@ -180,14 +187,16 @@ input[type=range] { width: 100%; }
 .seat.acting .name-plate { border-color: #e2b93b; box-shadow: 0 0 14px rgba(226,185,59,0.75); background: #1a4a30; }
 .seat.folded { opacity: 0.45; }
 .seat.folded .name-plate { border-color: #6b2a2a; }
-.seat .stack { color: #cfe9db; font-size: 11px; }
-.seat .bet-chip { font-size: 11px; color: #e2b93b; margin-top: 2px; font-weight: 700; }
+.seat .stack { color: #cfe9db; font-size: 11px; cursor: pointer; }
+.seat .bet-chip { font-size: 11px; color: #e2b93b; margin-top: 2px; font-weight: 700; cursor: pointer; }
 .seat .hole-cards { display: flex; gap: 3px; justify-content: center; margin-bottom: 4px; min-height: 48px; }
 .seat .pos-badge {
   position: absolute; top: -10px; right: -10px; background: #e2b93b; color: #1a1a1a;
   border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 800;
   min-width: 22px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
 }
+/* 칩리더(현재 스택이 가장 많은 사람) 왕관 표시 */
+.seat .name-plate .crown { margin-right: 3px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 
 /* 폴드 스탬프: 폴드한 플레이어를 명확하게 구분 */
 .seat .fold-stamp { display: none; }
@@ -315,6 +324,23 @@ input.raise-amount-input {
 
 /* 설정 모달 */
 #settings-modal [data-lobby-only].hidden { display: none; }
+
+/* 블라인드 구조 편집 모달 */
+#blind-editor-modal .modal-box.wide { max-width: 640px; }
+.blind-table-wrap { overflow-x: auto; margin: 12px 0; border: 1px solid #2a6b48; border-radius: 8px; }
+.blind-table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+.blind-table th, .blind-table td { padding: 6px 8px; text-align: center; border-bottom: 1px solid #1c4a33; }
+.blind-table th { background: #0e2e20; color: #9fd8ba; font-weight: 600; font-size: 12px; }
+.blind-table tbody tr:last-child td { border-bottom: none; }
+.blind-table tr.break-row { color: #7fae94; font-style: italic; background: rgba(255,255,255,0.03); }
+.blind-table input[type="number"] { width: 72px; padding: 4px 6px; text-align: right; }
+.blind-table input[type="checkbox"] { width: 16px; height: 16px; }
+.blind-table .cum-time { color: #9fd8ba; font-size: 12px; }
+.blind-table .btn-del-row {
+  background: transparent; color: #e08585; border: 1px solid #6b2a2a; border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; font-size: 12px;
+}
+.blind-table .btn-del-row:hover { background: rgba(224,133,133,0.15); }
 
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
