@@ -305,18 +305,31 @@ async function run() {
     table._closeRoom('test done');
   });
 
-  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, BB 앤티 등)', async () => {
+  await check('로비에서 호스트가 설정 변경 가능 (AI 인원수, 블라인드, BB 앤티 등)', async () => {
     const table = new TableManager({ hostId: 'host1', aiCount: 2, startingStack: 3000 });
     assert.strictEqual(table.config.bbAnte, true, '기본값은 BB 앤티 사용');
-    assert.ok(table.blinds.levels[4].ante > 0, '기본 상태에서는 5레벨부터 앤티가 있어야 함');
-    table.updateConfig('host1', { aiCount: 4, bbAnte: false, aiActionDelayMs: 1234 });
+    assert.strictEqual(table.blinds.levels[0].ante, table.blinds.levels[0].bb, '기본 상태에서는 앤티=bb여야 함');
+    table.updateConfig('host1', { aiCount: 4, startSb: 100, startBb: 200, bbAnte: false, aiActionDelayMs: 1234 });
     const lobby = table.getLobbyState();
     const aiSeated = lobby.seats.filter((s) => s && s.type === 'ai').length;
     assert.strictEqual(aiSeated, 4);
+    assert.strictEqual(table.blinds.levels[0].sb, 100);
+    assert.strictEqual(table.blinds.levels[0].bb, 200);
     assert.strictEqual(table.config.bbAnte, false);
-    assert.strictEqual(table.blinds.levels[4].ante, 0, 'BB 앤티를 끄면 앤티가 0이어야 함');
+    assert.strictEqual(table.blinds.levels[0].ante, 0, 'BB 앤티를 끄면 앤티가 0이어야 함');
     assert.strictEqual(table.config.aiActionDelayMs, 1234);
     assert.throws(() => table.updateConfig('guest-imposter', { aiCount: 1 }), /호스트만/);
+  });
+
+  await check('블라인드 상승 주기(levelDurationMinutes)를 사용자가 직접 설정 가능(레벨별 개별 시간 없이 공통 적용)', async () => {
+    const table = new TableManager({ hostId: 'host1', aiCount: 1, startingStack: 3000 });
+    assert.strictEqual(table.config.levelDurationMinutes, 15, '기본값은 15분');
+    table.updateConfig('host1', { levelDurationMinutes: 20 });
+    assert.strictEqual(table.config.levelDurationMinutes, 20);
+    assert.strictEqual(table.blinds.levelDurationMinutes, 20);
+    table.blinds.start(1_000_000);
+    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 19 * 60000), 0, '공통 주기이므로 19분에는 아직 레벨1');
+    assert.strictEqual(table.blinds.currentLevelIndex(1_000_000 + 20 * 60000), 1, '20분이 지나면 레벨2로 승급');
   });
 
   await check('게임 진행 중에는 aiCount/startingStack 같은 항목은 변경되지 않음(화이트리스트)', async () => {

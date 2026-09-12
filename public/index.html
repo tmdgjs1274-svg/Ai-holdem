@@ -49,6 +49,15 @@
     </div>
 
     <div class="grid2">
+      <label>시작 스몰블라인드
+        <input id="create-sb" type="number" value="100" min="1" step="100" />
+      </label>
+      <label>시작 빅블라인드
+        <input id="create-bb" type="number" value="200" min="2" step="100" />
+      </label>
+    </div>
+
+    <div class="grid2">
       <label>최대 리바인 횟수 (나·AI 공통, 0=리바인 불가)
         <input id="create-maxRebuys" type="number" value="0" min="0" max="999" />
       </label>
@@ -58,15 +67,18 @@
     </div>
 
     <div class="grid2">
-      <label class="checkbox-label">
-        <input id="create-bbAnte" type="checkbox" checked />
-        BB 앤티 사용
+      <label>블라인드 상승 주기 (분, 0=고정)
+        <input id="create-levelMinutes" type="number" value="15" min="0" max="180" />
       </label>
       <label>AI 액션 텀 (초)
         <input id="create-aiActionDelay" type="number" value="5" min="0" max="15" step="0.5" />
       </label>
     </div>
-    <p class="hint">블라인드는 100/200 시작, 12레벨 고정 구조로 자동 진행됩니다.</p>
+
+    <label class="checkbox-label">
+      <input id="create-bbAnte" type="checkbox" checked />
+      BB 앤티 사용 (버튼이 그 레벨 빅블라인드만큼 혼자 냄)
+    </label>
 
     <div class="row-buttons">
       <button id="btn-create-submit" class="btn primary">방 만들기</button>
@@ -204,9 +216,20 @@
         <input id="set-startingStack" type="number" min="100" step="100" />
       </label>
     </div>
+    <div class="grid2" data-lobby-only>
+      <label>시작 스몰블라인드
+        <input id="set-startSb" type="number" min="1" step="100" />
+      </label>
+      <label>시작 빅블라인드
+        <input id="set-startBb" type="number" min="2" step="100" />
+      </label>
+    </div>
+    <label data-lobby-only>블라인드 상승 주기 (분, 0=고정)
+      <input id="set-levelMinutes" type="number" min="0" max="180" />
+    </label>
     <label class="checkbox-label" data-lobby-only>
       <input id="set-bbAnte" type="checkbox" />
-      BB 앤티 사용
+      BB 앤티 사용 (버튼이 그 레벨 빅블라인드만큼 혼자 냄)
     </label>
 
     <div class="grid2">

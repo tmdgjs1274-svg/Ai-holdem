@@ -88,6 +88,9 @@ el('btn-create-submit').addEventListener('click', () => {
     aiSkillLevel: Number(el('create-aiSkill').value),
     startingStack: Number(el('create-startingStack').value),
     rebuyAmount: Number(el('create-rebuyAmount').value),
+    startSb: Number(el('create-sb').value),
+    startBb: Number(el('create-bb').value),
+    levelDurationMinutes: Number(el('create-levelMinutes').value),
     bbAnte: el('create-bbAnte').checked,
     maxRebuys: Number(el('create-maxRebuys').value),
     addOnAmount: Number(el('create-addOnAmount').value),
@@ -182,6 +185,9 @@ function openSettingsModal() {
   el('set-aiCount').value = cfg.aiCount;
   el('set-aiCount-label').textContent = cfg.aiCount;
   el('set-startingStack').value = cfg.startingStack;
+  el('set-startSb').value = cfg.startSb;
+  el('set-startBb').value = cfg.startBb;
+  el('set-levelMinutes').value = cfg.levelDurationMinutes;
   el('set-bbAnte').checked = cfg.bbAnte !== false;
   el('set-rebuyAmount').value = cfg.rebuyAmount;
   el('set-maxRebuys').value = cfg.maxRebuys;
@@ -214,6 +220,9 @@ el('btn-settings-save').addEventListener('click', () => {
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
     patch.startingStack = Number(el('set-startingStack').value);
+    patch.startSb = Number(el('set-startSb').value);
+    patch.startBb = Number(el('set-startBb').value);
+    patch.levelDurationMinutes = Number(el('set-levelMinutes').value);
     patch.bbAnte = el('set-bbAnte').checked;
   }
   socket.emit('updateSettings', patch, (res) => {

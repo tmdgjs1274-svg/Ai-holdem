@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { BlindStructure, DEFAULT_LEVEL_TABLE } = require('../src/game/BlindStructure');
+const { BlindStructure, generateDefaultStructure } = require('../src/game/BlindStructure');
 
 function run() {
   let n = 0;
@@ -11,70 +11,58 @@ function run() {
     console.log(`  ok - ${label}`);
   };
 
-  check('기본 프리셋: 12레벨, 이미지 값과 일치 (BB 앤티 사용 시)', () => {
-    const bs = new BlindStructure({ bbAnte: true });
-    assert.strictEqual(bs.levels.length, 12);
-    assert.deepStrictEqual(
-      bs.levels.map((l) => [l.sb, l.bb, l.ante, l.durationMinutes]),
-      DEFAULT_LEVEL_TABLE.map((l) => [l.sb, l.bb, l.ante, l.durationMinutes])
-    );
-    // 앞 4레벨은 앤티 없음, 5레벨부터 BB와 동일한 앤티
-    assert.strictEqual(bs.levels[0].ante, 0);
-    assert.strictEqual(bs.levels[3].ante, 0);
-    assert.strictEqual(bs.levels[4].ante, bs.levels[4].bb);
-    assert.strictEqual(bs.levels[11].sb, 10000);
-    assert.strictEqual(bs.levels[11].bb, 20000);
-  });
-
-  check('bbAnte: false면 모든 레벨의 앤티가 0으로 강제됨', () => {
-    const bs = new BlindStructure({ bbAnte: false });
-    for (const lvl of bs.levels) {
-      assert.strictEqual(lvl.ante, 0, `앤티는 0이어야 함 (level ${lvl.level})`);
+  check('기본 블라인드 구조: BB 앤티 비활성화 시 앤티 없음, 레벨업마다 스몰블라인드 2배', () => {
+    const levels = generateDefaultStructure(100, 200, 6, false);
+    assert.strictEqual(levels.length, 6);
+    for (const lvl of levels) {
+      assert.strictEqual(lvl.ante, 0, `앤티는 항상 0이어야 함 (level ${lvl.level})`);
     }
-    // SB/BB 값 자체는 그대로 유지
-    assert.strictEqual(bs.levels[4].sb, 1000);
-    assert.strictEqual(bs.levels[4].bb, 2000);
+    assert.strictEqual(levels[0].sb, 100);
+    assert.strictEqual(levels[0].bb, 200);
+    assert.strictEqual(levels[1].sb, 200);
+    assert.strictEqual(levels[1].bb, 400);
+    assert.strictEqual(levels[2].sb, 400);
+    assert.strictEqual(levels[2].bb, 800);
+    assert.strictEqual(levels[3].sb, 800);
   });
 
-  check('시작 전(startedAt=null)에는 항상 레벨1', () => {
-    const bs = new BlindStructure({ bbAnte: true });
+  check('커스텀 시작 블라인드 비율도 유지하며 2배씩 상승', () => {
+    const levels = generateDefaultStructure(50, 150, 3, false); // bb = 3*sb 비율
+    assert.strictEqual(levels[0].sb, 50);
+    assert.strictEqual(levels[0].bb, 150);
+    assert.strictEqual(levels[1].sb, 100);
+    assert.strictEqual(levels[1].bb, 300);
+  });
+
+  check('BB 앤티 활성화(기본값)면 각 레벨의 앤티 = 그 레벨의 bb', () => {
+    const levels = generateDefaultStructure(100, 200, 4); // bbAnte 기본값 true
+    for (const lvl of levels) {
+      assert.strictEqual(lvl.ante, lvl.bb, `앤티는 bb와 같아야 함 (level ${lvl.level})`);
+    }
+  });
+
+  check('BlindStructure.getCurrent()는 마지막 레벨 이후 값을 유지(레벨 승급 없음, 0=고정)', () => {
+    const bs = new BlindStructure({ startSb: 100, startBb: 200, levelDurationMinutes: 0 });
     const cur = bs.getCurrent();
-    assert.strictEqual(cur.level, 1);
     assert.strictEqual(cur.sb, 100);
-    assert.strictEqual(cur.bb, 200);
+    assert.strictEqual(cur.ante, 200, '기본값은 BB 앤티 사용이므로 ante=bb');
   });
 
-  check('레벨별로 다른 지속시간을 반영해 누적 경과시간으로 레벨 계산', () => {
-    const bs = new BlindStructure({ bbAnte: true });
+  check('bbAnte: false로 생성하면 앤티가 전부 0', () => {
+    const bs = new BlindStructure({ startSb: 100, startBb: 200, levelDurationMinutes: 0, bbAnte: false });
+    assert.strictEqual(bs.getCurrent().ante, 0);
+  });
+
+  check('levelDurationMinutes는 모든 레벨에 공통으로 적용되어 시간에 따라 레벨이 올라감', () => {
+    const bs = new BlindStructure({ startSb: 100, startBb: 200, levelDurationMinutes: 10 });
     const start = 1_000_000;
     bs.start(start);
-    // 레벨1~4는 7분씩 = 28분. 그 이후 레벨5(10분)
     assert.strictEqual(bs.currentLevelIndex(start), 0);
-    assert.strictEqual(bs.currentLevelIndex(start + 6 * 60000), 0); // 6분 경과: 아직 레벨1
-    assert.strictEqual(bs.currentLevelIndex(start + 7 * 60000), 1); // 7분 경과: 레벨2 진입
-    assert.strictEqual(bs.currentLevelIndex(start + 27 * 60000), 3); // 27분: 레벨4
-    assert.strictEqual(bs.currentLevelIndex(start + 28 * 60000), 4); // 28분: 레벨5(10분 구간) 진입
-    assert.strictEqual(bs.currentLevelIndex(start + 37 * 60000), 4); // 37분: 아직 레벨5
-    assert.strictEqual(bs.currentLevelIndex(start + 38 * 60000), 5); // 38분: 레벨6
-  });
-
-  check('getCurrent()는 마지막 레벨 이후에도 마지막 레벨 값을 유지', () => {
-    const bs = new BlindStructure({ bbAnte: true });
-    bs.start(0);
-    const cur = bs.getCurrent(10_000 * 60000); // 아주 먼 미래
-    assert.strictEqual(cur.isFinalLevel, true);
-    assert.strictEqual(cur.level, 12);
-    assert.strictEqual(cur.sb, 10000);
-    assert.strictEqual(cur.msRemaining, null);
-  });
-
-  check('getCurrent()의 msRemaining은 현재 레벨이 끝나기까지 남은 시간(ms)', () => {
-    const bs = new BlindStructure({ bbAnte: true });
-    const start = 0;
-    bs.start(start);
-    const cur = bs.getCurrent(start + 2 * 60000); // 레벨1 시작 2분 경과 (레벨1은 7분)
-    assert.strictEqual(cur.level, 1);
-    assert.strictEqual(cur.msRemaining, 5 * 60000);
+    assert.strictEqual(bs.currentLevelIndex(start + 9 * 60000), 0); // 9분: 아직 레벨1
+    assert.strictEqual(bs.currentLevelIndex(start + 10 * 60000), 1); // 10분: 레벨2
+    assert.strictEqual(bs.currentLevelIndex(start + 25 * 60000), 2); // 25분: 레벨3
+    const cur = bs.getCurrent(start + 25 * 60000);
+    assert.strictEqual(cur.sb, 400); // 레벨3 = 100 * 2^2
   });
 
   console.log(`BlindStructure: ${n}개 테스트 통과`);

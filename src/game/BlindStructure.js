@@ -1,35 +1,33 @@
 'use strict';
 
-// 고정 블라인드 프리셋 (사용자 제공 이미지 기준). 레벨마다 지속시간이 다르다.
-// ante는 "BB 앤티" 방식 기준값으로, bbAnte 옵션이 false면 0으로 취급한다.
-const DEFAULT_LEVEL_TABLE = [
-  { level: 1, sb: 100, bb: 200, ante: 0, durationMinutes: 7 },
-  { level: 2, sb: 200, bb: 400, ante: 0, durationMinutes: 7 },
-  { level: 3, sb: 300, bb: 600, ante: 0, durationMinutes: 7 },
-  { level: 4, sb: 500, bb: 1000, ante: 0, durationMinutes: 7 },
-  { level: 5, sb: 1000, bb: 2000, ante: 2000, durationMinutes: 10 },
-  { level: 6, sb: 2000, bb: 4000, ante: 4000, durationMinutes: 10 },
-  { level: 7, sb: 3000, bb: 6000, ante: 6000, durationMinutes: 10 },
-  { level: 8, sb: 4000, bb: 8000, ante: 8000, durationMinutes: 10 },
-  { level: 9, sb: 5000, bb: 10000, ante: 10000, durationMinutes: 10 },
-  { level: 10, sb: 6000, bb: 12000, ante: 12000, durationMinutes: 5 },
-  { level: 11, sb: 8000, bb: 16000, ante: 16000, durationMinutes: 5 },
-  { level: 12, sb: 10000, bb: 20000, ante: 20000, durationMinutes: 5 },
-];
+// 기존 방식으로 되돌린 블라인드 구조: 레벨마다 스몰블라인드 기준 2배씩 상승하고,
+// 모든 레벨의 지속시간은 공통(levelDurationMinutes)으로 동일하게 적용한다(레벨별 개별 시간 없음).
+// bbAnte가 true면 "BB 앤티" 방식(버튼 한 명이 그 레벨의 빅블라인드와 동일한 금액을 혼자 냄)으로
+// 각 레벨의 ante가 그 레벨의 bb와 같은 값으로 채워지고, false면 앤티 없이 0으로 유지된다.
+function generateDefaultStructure(startSb = 100, startBb = 200, count = 18, bbAnte = true) {
+  const levels = [];
+  const ratio = startBb / startSb;
+  let sb = startSb;
+  for (let i = 1; i <= count; i++) {
+    const bb = Math.round(sb * ratio);
+    levels.push({ level: i, sb, bb, ante: bbAnte ? bb : 0 });
+    sb *= 2;
+  }
+  return levels;
+}
 
 class BlindStructure {
   /**
-   * @param {boolean} bbAnte - true(기본값)면 프리셋의 앤티(BB 앤티 방식)를 그대로 사용,
-   *   false면 모든 레벨의 앤티를 0으로 취급한다.
-   * @param {Array} levels - 테스트/커스텀용으로 레벨 테이블을 직접 주입할 수 있음(옵션).
+   * @param {Array} [levels] - 직접 레벨 테이블을 주입(옵션). 없으면 startSb/startBb로 기본 생성.
+   * @param {number} [levelDurationMinutes] - 모든 레벨에 공통으로 적용되는 지속시간(분). 0이면 블라인드 고정(승급 없음).
+   * @param {number} [startSb] - 1레벨 스몰블라인드. 기본 100
+   * @param {number} [startBb] - 1레벨 빅블라인드. 기본 200
+   * @param {boolean} [bbAnte] - true(기본값)면 각 레벨의 앤티를 그 레벨의 bb와 동일하게 채움(BB 앤티 방식), false면 앤티 없음
    */
-  constructor({ bbAnte = true, levels } = {}) {
+  constructor({ levels, levelDurationMinutes = 15, startSb = 100, startBb = 200, bbAnte = true } = {}) {
     this.bbAnte = bbAnte !== false;
-    const base = levels && levels.length ? levels : DEFAULT_LEVEL_TABLE;
-    this.levels = base.map((lv) => ({
-      ...lv,
-      ante: this.bbAnte ? lv.ante : 0,
-    }));
+    this.levels = levels && levels.length ? levels : generateDefaultStructure(startSb, startBb, 18, this.bbAnte);
+    this.levelDurationMinutes = levelDurationMinutes;
     this.startedAt = null;
   }
 
@@ -38,41 +36,27 @@ class BlindStructure {
   }
 
   isEscalating() {
-    return this.levels.length > 1;
+    return !!this.levelDurationMinutes && this.levelDurationMinutes > 0;
   }
 
-  /**
-   * 각 레벨의 누적 시작 시각(startedAt 기준 경과 분)을 계산해 현재 몇 번째 레벨인지 반환.
-   * 레벨마다 durationMinutes가 다를 수 있으므로 누적합으로 계산한다.
-   */
   currentLevelIndex(now = Date.now()) {
-    if (this.startedAt == null) return 0;
+    if (!this.isEscalating() || this.startedAt == null) return 0;
     const elapsedMin = (now - this.startedAt) / 60000;
-    let acc = 0;
-    for (let i = 0; i < this.levels.length; i++) {
-      const dur = this.levels[i].durationMinutes;
-      // 마지막 레벨이거나 duration이 없으면(무제한) 여기서 머무름
-      if (i === this.levels.length - 1 || !dur) return i;
-      acc += dur;
-      if (elapsedMin < acc) return i;
-    }
-    return this.levels.length - 1;
+    const idx = Math.floor(elapsedMin / this.levelDurationMinutes);
+    return Math.min(idx, this.levels.length - 1);
   }
 
   getCurrent(now = Date.now()) {
     const idx = this.currentLevelIndex(now);
     const level = this.levels[idx];
     let msRemaining = null;
-    if (this.startedAt != null && idx < this.levels.length - 1 && level.durationMinutes) {
-      // idx 레벨이 시작된 누적 경과 시간(분) 계산
-      let accBeforeThis = 0;
-      for (let i = 0; i < idx; i++) accBeforeThis += this.levels[i].durationMinutes || 0;
-      const levelStartMs = this.startedAt + accBeforeThis * 60000;
-      const levelMs = level.durationMinutes * 60000;
-      msRemaining = Math.max(0, levelStartMs + levelMs - now);
+    if (this.isEscalating() && this.startedAt != null && idx < this.levels.length - 1) {
+      const levelMs = this.levelDurationMinutes * 60000;
+      const elapsed = now - this.startedAt;
+      msRemaining = levelMs - (elapsed % levelMs);
     }
     return { ...level, msRemaining, isFinalLevel: idx === this.levels.length - 1 };
   }
 }
 
-module.exports = { BlindStructure, DEFAULT_LEVEL_TABLE };
+module.exports = { BlindStructure, generateDefaultStructure };

@@ -20,8 +20,8 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
-  'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte',
-  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
+  'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'startSb', 'startBb',
+  'levelDurationMinutes', 'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
@@ -46,7 +46,10 @@ class TableManager extends EventEmitter {
    * @param {number} [config.maxSeats] 기본 9
    * @param {number} config.startingStack
    * @param {number} config.rebuyAmount
-   * @param {boolean} [config.bbAnte] 고정 블라인드 프리셋의 BB 앤티 사용 여부, 기본 true
+   * @param {number} [config.startSb] 1레벨 스몰블라인드, 기본 100
+   * @param {number} [config.startBb] 1레벨 빅블라인드, 기본 200
+   * @param {number} [config.levelDurationMinutes] 모든 레벨 공통 지속시간(분). 0이면 블라인드 고정, 기본 15
+   * @param {boolean} [config.bbAnte] BB 앤티(버튼이 그 레벨 bb만큼 혼자 냄) 사용 여부, 기본 true
    * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
    * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
@@ -74,12 +77,21 @@ class TableManager extends EventEmitter {
       allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
       aiCount: Math.max(0, Math.min(config.aiCount || 0, this.maxSeats - 1)),
       bbAnte: config.bbAnte !== false,
+      // 아래 2개는 블라인드 구조 표시용 미러(mirror) 필드 — 실제 값은 this.blinds가 갖고 있음
+      startSb: config.startSb || 100,
+      startBb: config.startBb || 200,
+      levelDurationMinutes: config.levelDurationMinutes != null ? config.levelDurationMinutes : 15,
     };
 
     this.engine = new GameEngine({ maxSeats: this.maxSeats, rng: config.rng || Math.random });
     this.engine.on('action', (record) => this.emit('playerAction', record));
 
-    this.blinds = new BlindStructure({ bbAnte: this.config.bbAnte });
+    this.blinds = new BlindStructure({
+      startSb: this.config.startSb,
+      startBb: this.config.startBb,
+      levelDurationMinutes: this.config.levelDurationMinutes,
+      bbAnte: this.config.bbAnte,
+    });
     this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
 
     this.status = 'lobby'; // lobby | in_progress | closed
@@ -277,10 +289,23 @@ class TableManager extends EventEmitter {
     if ('rebuyAmount' in applied) {
       this.config.rebuyAmount = Math.max(100, Number(applied.rebuyAmount) || this.config.rebuyAmount);
     }
-    if ('bbAnte' in applied && this.status === 'lobby') {
-      const bbAnte = applied.bbAnte !== false;
-      this.blinds = new BlindStructure({ bbAnte });
+    if (
+      ('startSb' in applied || 'startBb' in applied || 'levelDurationMinutes' in applied || 'bbAnte' in applied) &&
+      this.status === 'lobby'
+    ) {
+      const cur = this.blinds.levels[0];
+      const sb = 'startSb' in applied ? Math.max(1, Number(applied.startSb) || cur.sb) : this.config.startSb;
+      const bb = 'startBb' in applied ? Math.max(2, Number(applied.startBb) || cur.bb) : this.config.startBb;
+      const levelDurationMinutes =
+        'levelDurationMinutes' in applied
+          ? Math.max(0, Number(applied.levelDurationMinutes) || 0)
+          : this.config.levelDurationMinutes;
+      const bbAnte = 'bbAnte' in applied ? applied.bbAnte !== false : this.config.bbAnte;
+      this.blinds = new BlindStructure({ startSb: sb, startBb: bb, levelDurationMinutes, bbAnte });
       this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
+      this.config.startSb = sb;
+      this.config.startBb = bb;
+      this.config.levelDurationMinutes = levelDurationMinutes;
       this.config.bbAnte = bbAnte;
     }
     if ('aiMistakeRate' in applied) {
