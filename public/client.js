@@ -1213,6 +1213,20 @@ function alignRaiseTo100(value, legal) {
   if (v < legal.minRaiseTo) v = legal.minRaiseTo;
   return v;
 }
+// 표시 모드에 따라 정렬 단위를 다르게 가져간다.
+// - 칩 모드: 기존처럼 100칩 단위로 정렬(깔끔한 금액)
+// - bb 모드: 100칩 단위로 정렬하면 bb 스텝(0.1bb 등 소액)이 그대로 뭉개져서
+//   +/- 버튼을 눌러도 값이 안 바뀌는 것처럼 보인다. bb 모드에서는 훨씬 작은
+//   단위(대략 0.1bb에 해당하는 칩 수, 최소 1칩)로 정렬해야 스텝 조작이 실제로 반영된다.
+function alignRaiseStep(value, legal) {
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  if (!bb) return alignRaiseTo100(value, legal);
+  const unit = Math.max(1, Math.round(bb / 10));
+  let v = Math.round(value / unit) * unit;
+  if (v < legal.minRaiseTo) v = legal.minRaiseTo;
+  if (v > legal.maxRaiseTo) v = legal.maxRaiseTo;
+  return v;
+}
 
 const POT_QUICK_PCTS = [0.3, 0.5, 0.7, 1.0, 1.5];
 
@@ -1249,6 +1263,10 @@ function updateActionBar(state) {
     return;
   }
   bar.classList.remove('hidden');
+
+  // BB 모드에서 슬라이더/직접입력 칸에는 숫자만 보여서 단위(칩인지 bb인지) 구분이 안 되던
+  // 문제를 위해, 항상 현재 표시 단위를 라벨로 붙여준다.
+  el('raise-amount-unit').textContent = chipDisplayMode === 'bb' && currentBB() ? 'BB' : '칩';
 
   el('btn-check').style.display = legal.canCheck ? 'block' : 'none';
   el('btn-call').style.display = legal.canCall ? 'block' : 'none';
@@ -1310,7 +1328,7 @@ el('btn-call').addEventListener('click', () => sendAction('call'));
 el('btn-allin').addEventListener('click', () => sendAction('allin'));
 el('btn-raise').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
-  const amount = legal ? alignRaiseTo100(raiseAmountChips, legal) : raiseAmountChips;
+  const amount = legal ? alignRaiseStep(raiseAmountChips, legal) : raiseAmountChips;
   sendAction('raise', amount);
 });
 
@@ -1326,14 +1344,14 @@ el('btn-raise-minus').addEventListener('click', () => {
   if (!legal) return;
   const bb = chipDisplayMode === 'bb' ? currentBB() : null;
   const stepChips = bb ? Math.max(1, Math.round(bb * 0.1)) : 100; // bb 모드는 0.1bb씩, 칩 모드는 100칩씩
-  setRaiseAmount(alignRaiseTo100(raiseAmountChips - stepChips, legal));
+  setRaiseAmount(alignRaiseStep(raiseAmountChips - stepChips, legal));
 });
 el('btn-raise-plus').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
   if (!legal) return;
   const bb = chipDisplayMode === 'bb' ? currentBB() : null;
   const stepChips = bb ? Math.max(1, Math.round(bb * 0.1)) : 100;
-  setRaiseAmount(alignRaiseTo100(raiseAmountChips + stepChips, legal));
+  setRaiseAmount(alignRaiseStep(raiseAmountChips + stepChips, legal));
 });
 el('raise-amount-input').addEventListener('input', () => {
   // 타이핑 중에는 100단위 정렬을 강제하지 않고 슬라이더와 내부 칩 값만 실시간으로 맞춰준다.
@@ -1349,7 +1367,7 @@ el('raise-amount-input').addEventListener('change', () => {
   if (!legal) return;
   const v = Number(el('raise-amount-input').value);
   const chips = Number.isNaN(v) ? legal.minRaiseTo : displayToChips(v);
-  setRaiseAmount(alignRaiseTo100(chips, legal));
+  setRaiseAmount(alignRaiseStep(chips, legal));
 });
 
 // ---------- 팟레이즈 콤보 드롭다운: 토글 + 바깥 클릭 시 닫기 ----------

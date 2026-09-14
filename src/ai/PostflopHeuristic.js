@@ -1,7 +1,7 @@
 'use strict';
 
 const { estimateEquity } = require('./Equity');
-const { roundRaiseTo } = require('./util');
+const { roundRaiseTo, quirkFactor } = require('./util');
 const { classifyBoardTexture } = require('./BoardTexture');
 const { buildOpponentRangeFilters } = require('./RangeModel');
 
@@ -118,6 +118,10 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   const rng = opts.rng || Math.random;
   const mistakeRate = opts.mistakeRate != null ? opts.mistakeRate : 0.08;
   const skill = clamp(opts.skillLevel != null ? opts.skillLevel : 75, 0, 100);
+  // 아래 "근거 약한 브러프캐치 콜/세미블러프" 같은 고정확률 잡버릇에 곱하는 배율.
+  // skill===75(기존 기본값)에서 1이라 기존 튜닝을 그대로 보존하고, skill=100이면 0이 되어
+  // "실력 100%인데 말도 안 되는 A하이 콜이 나온다"는 문제를 없앤다.
+  const quirk = quirkFactor(skill);
   const hs = engine.hs[seatIndex];
 
   const opponentSeats = engine.activePlayerSeats().filter((i) => i !== seatIndex);
@@ -224,11 +228,11 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   }
 
   const gap = requiredEquity - equity;
-  if (gap < 0.08 && legal.canCall && rng() < 0.3) {
-    return { actionType: 'call' }; // 브러프캐치 믹스
+  if (gap < 0.08 && legal.canCall && rng() < 0.3 * quirk) {
+    return { actionType: 'call' }; // 브러프캐치 믹스(실력 100%면 0 - "말도 안 되는 콜" 방지)
   }
-  if (equity > 0.3 && equity < 0.5 && legal.canRaise && rng() < 0.08) {
-    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6) }; // 세미블러프
+  if (equity > 0.3 && equity < 0.5 && legal.canRaise && rng() < 0.08 * quirk) {
+    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6) }; // 세미블러프(실력 100%면 0)
   }
   return { actionType: legal.canCheck ? 'check' : 'fold' };
 }

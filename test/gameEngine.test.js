@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { GameEngine } = require('../src/game/GameEngine');
+const { GameEngine, computePots } = require('../src/game/GameEngine');
 
 function seedRng(seed) {
   // 간단한 결정적 PRNG (mulberry32) - 테스트 재현성용
@@ -301,6 +301,46 @@ function run() {
         );
       }
     }
+  });
+
+  check('콜해야 할 금액이 0(무료 체크 상황, 예: BB 옵션)이어도 폴드는 항상 가능해야 한다', () => {
+    const eng = makeEngine(2);
+    eng.startHand();
+    // 헤즈업 프리플랍: 버튼(SB)이 림프(콜)하면 BB 차례로 넘어오는데, 이때 BB는 더 낼 돈이
+    // 없어(callAmount=0) 체크가 가능한 상황이다. 이 상황에서도 폴드 옵션 자체는 항상 있어야 한다.
+    const firstLegal = eng.getLegalActions(eng.actingSeat);
+    eng.applyAction(eng.actingSeat, firstLegal.canCall ? 'call' : 'check', firstLegal.callAmount || 0);
+    const bbLegal = eng.getLegalActions(eng.actingSeat);
+    assert.strictEqual(bbLegal.canCheck, true);
+    assert.strictEqual(bbLegal.callAmount, 0);
+    assert.strictEqual(bbLegal.canFold, true, 'toCall=0(무료 체크) 상황에서도 canFold는 true여야 한다');
+  });
+
+  check('computePots: 폴드한 사람의 기여액이 더 적어서 생기는 레이어는 사이드팟이 아니라 하나로 합쳐져야 한다', () => {
+    // 3인: A,B는 끝까지 겨루고 C는 프리플랍에 빅블라인드만 내고 폴드(기여액이 A,B보다 적음).
+    // 겨루는 사람 구성(eligibleSeats)이 모든 레이어에서 [A,B]로 동일하므로 실제로는 승부가
+    // 한 번뿐이다 - "메인팟+사이드팟"처럼 나뉘어 보이면 안 된다.
+    const pots = computePots([
+      { playerSeat: 0, amount: 500, folded: false },
+      { playerSeat: 1, amount: 500, folded: false },
+      { playerSeat: 2, amount: 50, folded: true },
+    ]);
+    assert.strictEqual(pots.length, 1, '겨루는 구성이 동일한 레이어는 하나의 팟으로 합쳐져야 함');
+    assert.strictEqual(pots[0].amount, 1050);
+    assert.deepStrictEqual(pots[0].eligibleSeats.slice().sort(), [0, 1]);
+  });
+
+  check('computePots: 숏스택 올인처럼 겨루는 구성이 실제로 달라지는 진짜 사이드팟은 그대로 분리되어야 한다', () => {
+    const pots = computePots([
+      { playerSeat: 0, amount: 100, folded: false }, // 올인(숏스택)
+      { playerSeat: 1, amount: 500, folded: false },
+      { playerSeat: 2, amount: 500, folded: false },
+    ]);
+    assert.strictEqual(pots.length, 2);
+    assert.deepStrictEqual(pots[0].eligibleSeats.slice().sort(), [0, 1, 2]);
+    assert.strictEqual(pots[0].amount, 300);
+    assert.deepStrictEqual(pots[1].eligibleSeats.slice().sort(), [1, 2]);
+    assert.strictEqual(pots[1].amount, 800);
   });
 
   console.log(`GameEngine: ${n}개 테스트 통과`);

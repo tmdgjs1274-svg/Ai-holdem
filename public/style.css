@@ -279,6 +279,10 @@ input.raise-amount-input {
   background: #0e2e20; border: 1px solid #2a6b48; border-radius: 8px; padding: 8px 8px; font-size: 15px;
 }
 .raise-amount-input:disabled { opacity: 0.4; }
+.raise-amount-unit {
+  flex-shrink: 0; align-self: center; color: #9fd8b8; font-size: 12px; font-weight: 700;
+  min-width: 20px; text-align: left;
+}
 .action-buttons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .action-buttons .btn { margin: 0; padding: 12px 4px; font-size: 13px; }
 

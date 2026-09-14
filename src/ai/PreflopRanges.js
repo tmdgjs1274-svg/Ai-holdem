@@ -1,7 +1,7 @@
 'use strict';
 
 const { chenScore } = require('./Equity');
-const { roundRaiseTo } = require('./util');
+const { roundRaiseTo, quirkFactor } = require('./util');
 const { getPositionCategory } = require('../game/Position');
 
 // 9-max 기준 포지션별 오픈레이즈 최소 점수 (풀링 기준선)
@@ -91,6 +91,9 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const mistakeRate = opts.mistakeRate != null ? opts.mistakeRate : 0.08;
   const skill = Math.max(0, Math.min(100, opts.skillLevel != null ? opts.skillLevel : 75));
   const ctx = buildPreflopContext(engine, seatIndex);
+  // skill===75(기존 기본값)에서는 1이라서 아래 고정 확률 잡버릇들의 세기가 그대로 유지되고,
+  // skill=100이면 0이 되어 "실력 100%인데도 림프/3벳블러프가 나온다"는 문제가 사라진다.
+  const quirk = quirkFactor(skill);
   let score = ctx.score;
   if (rng() < mistakeRate) score += (rng() - 0.5) * 4; // 사람같은 실수: 핸드 강도 인식 오차
   score += (rng() - 0.5) * (1 - skill / 100) * 3; // 실력이 낮을수록 항상 섞이는 잔잡음
@@ -122,14 +125,14 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
       return { actionType: 'call' };
     }
     if (legal.canCheck) return { actionType: 'check' }; // BB 무료 옵션
-    if (legal.canCall && rng() < 0.06) return { actionType: 'call' }; // 사람같은 가끔의 림프
+    if (legal.canCall && rng() < 0.06 * quirk) return { actionType: 'call' }; // 사람같은 가끔의 림프(실력 100%면 0)
     return { actionType: 'fold' };
   }
 
   // 실제 레이즈(또는 3벳 이상)에 대응하는 상황
   const bluffWindow = score >= callThresh - 1 && score < openThresh && ['BTN', 'CO', 'SB'].includes(ctx.position);
-  // 3벳(이상) 블러프 확률. 0.12는 다소 잦다는 피드백을 반영해 0.09로 낮췄다.
-  const bluffRoll = rng() < 0.09 && ctx.numActive <= 5;
+  // 3벳(이상) 블러프 확률. 0.12는 다소 잦다는 피드백을 반영해 0.09로 낮췄다(실력 100%면 0으로 수렴).
+  const bluffRoll = rng() < 0.09 * quirk && ctx.numActive <= 5;
 
   if (score >= raiseThresh && legal.canRaise) {
     return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng) };
@@ -142,7 +145,7 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
     if (legal.canCall) return { actionType: 'call' };
     return { actionType: 'fold' };
   }
-  if (legal.canCall && rng() < 0.05) return { actionType: 'call' }; // 가끔 브러프캐치성 콜(실수 포함)
+  if (legal.canCall && rng() < 0.05 * quirk) return { actionType: 'call' }; // 가끔 브러프캐치성 콜(실력 100%면 0)
   return { actionType: legal.canCheck ? 'check' : 'fold' };
 }
 

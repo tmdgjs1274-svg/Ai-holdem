@@ -45,7 +45,26 @@ function computePots(contributions) {
       pots[pots.length - 1].amount += potAmount;
     }
   }
-  return pots;
+  // 진짜 "사이드팟"은 겨루는 사람 구성이 레이어마다 달라질 때만 의미가 있다(예: 숏스택 올인으로
+  // 그 이후 레이어에서는 제외되는 경우). 폴드한 사람의 기여 금액이 다른 사람보다 적어서 생기는
+  // 레이어 분할처럼, 겨루는 사람 구성(eligibleSeats)이 완전히 동일한 인접 레이어는 실질적으로
+  // 같은 승부이므로 하나의 팟으로 합쳐야 한다 - 그렇지 않으면(예: 헤즈업인데 한쪽이 프리플랍에
+  // 일찍 폴드해 기여액이 적은 경우) 진짜 승부는 한 번뿐인데 화면에는 "메인팟+사이드팟"처럼
+  // 잘못 나뉘어 표시되는 문제가 생긴다.
+  const merged = [];
+  for (const pot of pots) {
+    const prev = merged[merged.length - 1];
+    const sameEligibility =
+      prev &&
+      prev.eligibleSeats.length === pot.eligibleSeats.length &&
+      prev.eligibleSeats.slice().sort().join(',') === pot.eligibleSeats.slice().sort().join(',');
+    if (sameEligibility) {
+      prev.amount += pot.amount;
+    } else {
+      merged.push({ amount: pot.amount, eligibleSeats: pot.eligibleSeats });
+    }
+  }
+  return merged;
 }
 
 class GameEngine extends EventEmitter {

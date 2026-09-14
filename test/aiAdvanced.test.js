@@ -10,6 +10,7 @@ const {
 } = require('../src/ai/PostflopHeuristic');
 const { classifyBoardTexture } = require('../src/ai/BoardTexture');
 const { cardFromString } = require('../src/game/Deck');
+const { quirkFactor } = require('../src/ai/util');
 
 function seedRng(seed) {
   // gameEngine.test.js와 동일한 결정적 PRNG (mulberry32)
@@ -71,6 +72,16 @@ function run() {
     assert.ok(Math.abs(advancedFeatureWeight(80) - 0.8) < 1e-9);
     assert.strictEqual(advancedFeatureWeight(100), 1);
     assert.strictEqual(advancedFeatureWeight(0), 0);
+  });
+
+  check('quirkFactor: skillLevel=100이면 0(림프/브러프캐치성 잡버릇이 완전히 사라짐), 기존 기본값(75)에서는 1(기존 튜닝 보존)', () => {
+    assert.strictEqual(quirkFactor(100), 0);
+    assert.strictEqual(quirkFactor(75), 1);
+    assert.strictEqual(quirkFactor(50), 2);
+    assert.strictEqual(quirkFactor(0), 3);
+    // 범위를 벗어난 입력이 들어와도 0~3 사이로 안전하게 clamp됨
+    assert.strictEqual(quirkFactor(150), 0);
+    assert.strictEqual(quirkFactor(-10), 3);
   });
 
   check('textureSizeAdjust: weight=0이면 조정 없이 원래 fraction 그대로', () => {
