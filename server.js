@@ -9,7 +9,15 @@ const { TableManager, generateRoomCode } = require('./src/session/TableManager')
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+// 모바일 브라우저는 다른 앱으로 잠깐 전환하거나(카톡 확인, 전화 수신 등) 화면이 꺼지면
+// 백그라운드 탭의 타이머/네트워크를 강하게 절전시키는 경우가 많아, 기본 핑 설정(20초
+// 안에 응답 없으면 끊음)으로는 아주 잠깐 자리를 비운 것만으로도 소켓이 끊겨버렸다.
+// 핑 주기/타임아웃을 넉넉하게 늘려서, 실제로는 계속 연결되어 있었을 짧은 백그라운드
+// 구간에서 서버가 너무 성급하게 "끊겼다"고 판단하지 않도록 한다.
+const io = new Server(server, {
+  pingInterval: 25000,
+  pingTimeout: 60000,
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -73,6 +81,7 @@ function attachTableEvents(table) {
   table.on('playerAction', (payload) => io.to(table.roomId).emit('playerAction', payload));
   table.on('awaitNextHand', (payload) => io.to(table.roomId).emit('awaitNextHand', payload));
   table.on('readyStateChanged', (payload) => io.to(table.roomId).emit('readyStateChanged', payload));
+  table.on('actionClock', (payload) => io.to(table.roomId).emit('actionClock', payload));
   table.on('configUpdated', () => {
     broadcastLobby(table);
     if (table.status === 'in_progress') broadcastState(table);
@@ -110,6 +119,7 @@ io.on('connection', (socket) => {
         aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
         aiSkillLevel: clampInt(opts && opts.aiSkillLevel, 0, 100, 75),
         aiActionDelayMs: clampInt(opts && opts.aiActionDelayMs, 0, 15000, 1500),
+        actionTimeLimitSec: clampInt(opts && opts.actionTimeLimitSec, 0, 99, 0),
         maxRebuys: clampInt(opts && opts.maxRebuys, 0, 999, 1),
         addOnAmount: clampInt(opts && opts.addOnAmount, 0, 10000000, 0),
       });

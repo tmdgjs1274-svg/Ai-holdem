@@ -24,42 +24,85 @@ function drawRandom(pool, n, rng) {
   return out;
 }
 
+// localPool(그 반복 안에서만 쓰는 변형 가능한 배열)에서 무작위로 n장을 뽑아 제거하고 반환한다.
+// 필터 없이 그냥 뽑을 때(보드 카드 등) 사용.
+function popRandomCards(localPool, n, rng) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    if (localPool.length === 0) break;
+    const idx = Math.floor(rng() * localPool.length);
+    out.push(localPool[idx]);
+    localPool.splice(idx, 1);
+  }
+  return out;
+}
+
+// localPool에서 상대 홀카드 2장을 뽑는다. filter가 있으면 그 레인지 조건을 만족하는 조합이
+// 나올 때까지 몇 차례(maxAttempts) 다시 뽑아보고, 그래도 안 맞으면 마지막으로 뽑은 조합을
+// 그냥 채택한다(완벽한 레인지 필터링보다, 카드가 얼마 안 남았을 때 무한정 재시도하지 않는
+// 쪽을 우선한다 - 어차피 이건 근사 모델이다).
+function drawOpponentHand(localPool, filter, rng) {
+  const maxAttempts = filter ? 6 : 1;
+  let picked = null;
+  for (let attempt = 0; attempt < maxAttempts && localPool.length >= 2; attempt++) {
+    const i1 = Math.floor(rng() * localPool.length);
+    let i2 = Math.floor(rng() * (localPool.length - 1));
+    if (i2 >= i1) i2 += 1;
+    const c1 = localPool[i1];
+    const c2 = localPool[i2];
+    picked = { i1, i2, c1, c2 };
+    if (!filter || filter(c1, c2)) break;
+  }
+  if (!picked) return [];
+  const hi = Math.max(picked.i1, picked.i2);
+  const lo = Math.min(picked.i1, picked.i2);
+  localPool.splice(hi, 1);
+  localPool.splice(lo, 1);
+  return [picked.c1, picked.c2];
+}
+
 /**
  * 몬테카를로 시뮬레이션으로 히어로의 현재 이퀴티(지분)를 추정한다.
- * 상대 홀카드는 무작위(레인지 미지정)로 가정 - 정밀도는 낮지만 계산이 빠르고
- * 포지션/스택 기반 의사결정을 뒷받침하기엔 충분한 근사치를 제공한다.
+ * opponentFilters를 넘기지 않으면 상대 홀카드는 무작위(레인지 미지정)로 가정한다 - 정밀도는
+ * 낮지만 계산이 빠르고 포지션/스택 기반 의사결정을 뒷받침하기엔 충분한 근사치를 제공한다.
+ * opponentFilters(각 상대별 (card,card)=>boolean 함수 배열, 항목은 null 가능)를 넘기면 그
+ * 상대에 한해 필터를 만족하는 홀카드 위주로 샘플링한다(레인지 좁히기 - RangeModel.js 참고).
  *
  * @param {Array} heroCards 히어로 홀카드 2장
  * @param {Array} board 현재 보드 (0,3,4,5장)
  * @param {number} numOpponents 아직 핸드에 남아있는 상대 수
  * @param {function} rng
  * @param {number} iterations
+ * @param {Array<null|function>} [opponentFilters] numOpponents 길이의 레인지 필터 배열
  * @returns {number} 0~1 사이 추정 이퀴티
  */
-function estimateEquity(heroCards, board, numOpponents, rng = Math.random, iterations = 150) {
+function estimateEquity(heroCards, board, numOpponents, rng = Math.random, iterations = 150, opponentFilters = null) {
   if (numOpponents <= 0) return 1;
   const known = [...heroCards, ...board];
   const pool = remainingDeck(known);
   const neededBoard = 5 - board.length;
   const needed = neededBoard + numOpponents * 2;
   if (needed > pool.length) iterations = Math.max(20, Math.floor(iterations / 2));
+  const filters = Array.isArray(opponentFilters) ? opponentFilters : null;
 
   let equitySum = 0;
   for (let it = 0; it < iterations; it++) {
-    const drawn = drawRandom(pool, needed, rng);
-    const extraBoard = drawn.slice(0, neededBoard);
+    const localPool = pool.slice();
+    const extraBoard = popRandomCards(localPool, neededBoard, rng);
     const fullBoard = [...board, ...extraBoard];
     const heroScore = evaluateBest([...heroCards, ...fullBoard]);
 
     let bestOppScore = null;
-    let tieCount = 1;
     for (let o = 0; o < numOpponents; o++) {
-      const oppCards = [drawn[neededBoard + o * 2], drawn[neededBoard + o * 2 + 1]];
+      const filter = filters ? filters[o] : null;
+      const oppCards = drawOpponentHand(localPool, filter, rng);
+      if (oppCards.length < 2) continue; // 카드가 모자란 극단적 엣지케이스
       const oppScore = evaluateBest([...oppCards, ...fullBoard]);
       if (!bestOppScore || compareScore(oppScore, bestOppScore) > 0) {
         bestOppScore = oppScore;
       }
     }
+    if (!bestOppScore) continue;
 
     const cmp = compareScore(heroScore, bestOppScore);
     if (cmp > 0) equitySum += 1;

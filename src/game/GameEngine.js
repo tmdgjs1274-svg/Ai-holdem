@@ -110,6 +110,11 @@ class GameEngine extends EventEmitter {
     this.pots = [];
     this.street = 'preflop';
     this.lastHandResult = null;
+    // 이번 핸드에서 나온 모든 액션의 순서대로의 기록. AI가 "이 핸드에서 상대가 프리플랍에
+    // 어떻게 행동했는지"를 참고해 포스트플랍 레인지를 좁히거나(레인지 추정), 자신의 이전
+    // 스트리트 판단을 다음 스트리트까지 이어가는(멀티스트리트 플랜) 데 사용한다. 핸드마다
+    // 새로 시작하므로 여기서 초기화한다.
+    this.actionLog = [];
 
     const inHandSeats = [];
     this.hs = {};
@@ -256,6 +261,10 @@ class GameEngine extends EventEmitter {
     const hs = this.hs[seatIndex];
 
     let record = { seatIndex, actionType, amount: 0 };
+    // 액션을 실제로 처리하기 전, "이 액션이 베팅에 대응하는 것이었는지"를 미리 기록해둔다
+    // (베팅/레이즈 처리 중에 currentBet 등이 바뀌므로 반드시 처리 전 값을 써야 함). AI의
+    // 상대방 성향 추적(폴드 빈도 등)과 레인지 추정에 쓰인다.
+    const toCallBefore = legal.callAmount;
 
     if (actionType === 'fold') {
       hs.folded = true;
@@ -266,6 +275,13 @@ class GameEngine extends EventEmitter {
       const paid = this._commit(seatIndex, legal.callAmount);
       record.amount = paid;
     } else if (actionType === 'bet' || actionType === 'raise') {
+      // 이 스트리트에 아직 아무도 베팅하지 않은 상태(currentBet===0)에서 처음 돈을 거는 것은
+      // "레이즈"가 아니라 "벳"이다. 호출부(클라이언트/AI)가 어떤 actionType을 넘겼든, 실제
+      // 결과 라벨은 여기서 currentBet 기준으로 다시 판정한다(단일 소스: 표시/음성 안내 모두
+      // 이 record.actionType을 그대로 사용하므로 여기서만 고치면 전체에 일관되게 반영됨).
+      // 프리플랍은 빅블라인드가 이미 강제 베팅이므로(currentBet=bb>0), 첫 오픈레이즈도 관례상
+      // 그대로 "레이즈"로 남는다 - 이건 의도된 동작이다.
+      const isOpeningBet = this.currentBet === 0;
       const raiseTo = Math.max(amount, legal.minRaiseTo);
       const cappedRaiseTo = Math.min(raiseTo, legal.maxRaiseTo);
       const toCommit = cappedRaiseTo - hs.committedThisStreet;
@@ -275,6 +291,7 @@ class GameEngine extends EventEmitter {
       const increment = cappedRaiseTo - this.currentBet;
       const paid = this._commit(seatIndex, toCommit);
       record.amount = paid;
+      record.actionType = isOpeningBet ? 'bet' : 'raise';
       if (cappedRaiseTo > this.currentBet) {
         this.currentBet = cappedRaiseTo;
         // 정식 레이즈(최소레이즈 이상)면 minRaiseIncrement 갱신 및 액션 재오픈
@@ -302,7 +319,9 @@ class GameEngine extends EventEmitter {
     }
 
     hs.hasActedThisStreet = true;
-    this.emit('action', { ...record, seat: seat.displayName });
+    const logEntry = { seatIndex, street: this.street, actionType: record.actionType, amount: record.amount, toCallBefore };
+    this.actionLog.push(logEntry);
+    this.emit('action', { ...record, seat: seat.displayName, street: this.street, toCallBefore });
 
     this._advance();
     return this.getPublicState();
@@ -454,8 +473,17 @@ class GameEngine extends EventEmitter {
         winnings[w] = (winnings[w] || 0) + share + (remainder > 0 ? 1 : 0);
         if (remainder > 0) remainder--;
       }
+      // pots[0]은 항상 "메인팟"이다: computePots가 기여 금액이 가장 적은 층부터 순서대로
+      // 쌓기 때문에, 첫 번째로 만들어지는 팟은 폴드하지 않은 전원이 나눠 겨루는 층이고
+      // (즉 진짜 승부를 가리는 메인팟), 그 뒤에 추가되는 팟들은 그보다 스택이 큰 사람들끼리만
+      // 겨루는 사이드팟이다. 숏스택이 메인팟에서 최고 족보로 이겼는데, 스택이 큰 두 사람이
+      // 사이드팟에서 (숏스택보다 약한 패로) 겨뤄 그 사이드팟만 가져가는 경우, 화면에 구분 없이
+      // 보여주면 "더 높은 족보가 진 것처럼" 보일 수 있어 isMain 플래그를 남겨둔다.
       potResults.push({ amount: pot.amount, winners, handName: bestScore.name });
     }
+    // index 0 = 메인팟(전원이 겨루는 층), 그 이후 = 사이드팟(스택이 큰 사람들끼리만 겨루는 층)
+    potResults.forEach((pr, idx) => { pr.isMain = idx === 0; });
+    const mainWinnerSeats = potResults.length ? potResults[0].winners.slice() : [];
 
     this._applyWinnings(winnings);
     this.street = 'showdown';
@@ -470,6 +498,10 @@ class GameEngine extends EventEmitter {
         hand: bestBySeat[seatIdx].name,
       })),
       pots: potResults,
+      // 메인팟(=진짜 승부)을 가져간 좌석들. 사이드팟에서만 돈을 받은 좌석은 여기 포함되지
+      // 않으므로, 클라이언트가 "승리자"(메인팟)와 "사이드"(사이드팟에서만 이김)를 구분해
+      // 표시할 수 있다.
+      mainWinnerSeats,
     };
     this.emit('handEnd', this.lastHandResult);
   }

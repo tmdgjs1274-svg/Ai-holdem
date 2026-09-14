@@ -139,6 +139,58 @@ async function run() {
     table._closeRoom('test done');
   });
 
+  await check('접속 끊김 판정: 셔플로 좌석0에 온 게스트가 오래 끊겨도 방 전체가 아니라 그 게스트만 퇴장함(호스트 판정은 좌석번호가 아닌 playerId 기준)', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 0,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
+      rng: () => 0, // 고정 셔플: host1(원래 좌석0)과 guest1(원래 좌석1)이 서로 자리를 바꿈
+    });
+    table.addGuest('guest1', 'Guest');
+    table.start();
+    assert.strictEqual(table.seatByPlayer['guest1'], 0, '테스트 전제: 셔플 후 guest1이 좌석0에 있어야 함');
+    assert.strictEqual(table.seatByPlayer['host1'], 1, '테스트 전제: 셔플 후 host1이 좌석1에 있어야 함');
+
+    table.disconnect('guest1');
+    // 실제로 몇 분을 기다리는 대신, "이미 오래전에 끊겼다"고 시간을 되돌려 시뮬레이션한다.
+    table.humanBySeat[0].disconnectedAt = Date.now() - 10 * 60 * 1000;
+    let roomClosed = false;
+    table.on('roomClosed', () => { roomClosed = true; });
+    const closed = table._reapLongDisconnectedHumans();
+    assert.strictEqual(closed, false, '좌석0에 있는 건 게스트일 뿐이므로 방이 종료되면 안 됨');
+    assert.strictEqual(roomClosed, false);
+    assert.strictEqual(table.engine.seats[0], null, '오래 끊긴 게스트는 좌석에서 제거되어야 함');
+    assert.strictEqual(table.status, 'in_progress', '방은 계속 진행 중이어야 함');
+  });
+
+  await check('접속 끊김 판정: 호스트가 셔플로 좌석0이 아닌 곳에 있어도 오래 끊기면 정상적으로 방이 종료됨', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 0,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 5,
+      rng: () => 0,
+    });
+    table.addGuest('guest1', 'Guest');
+    table.start();
+    assert.strictEqual(table.seatByPlayer['host1'], 1, '테스트 전제: 셔플 후 host1이 좌석1(0번이 아님)에 있어야 함');
+
+    table.disconnect('host1');
+    table.humanBySeat[1].disconnectedAt = Date.now() - 10 * 60 * 1000;
+    let roomClosed = false;
+    let closeReason = null;
+    table.on('roomClosed', ({ reason }) => { roomClosed = true; closeReason = reason; });
+    const closed = table._reapLongDisconnectedHumans();
+    assert.strictEqual(closed, true, '호스트가 오래 끊기면 좌석 번호와 무관하게 방이 종료되어야 함');
+    assert.strictEqual(roomClosed, true);
+    assert.ok(closeReason.includes('호스트'), `종료 사유에 호스트가 언급되어야 함 (실제: ${closeReason})`);
+  });
+
   await check('게임 진행: AI만 있는 경우 자동으로 여러 핸드 진행 + 칩 보존', async () => {
     const table = new TableManager({
       hostId: 'host1',
@@ -633,6 +685,49 @@ async function run() {
     table._closeRoom('test done');
   });
 
+  await check('다음 핸드 진행은 게스트 동의 없이 호스트만 눌러도 됨', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 0,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      maxRebuys: 999,
+      shuffleSeatsOnStart: false,
+    });
+    table.addGuest('guest1', 'Guest');
+    let awaitCount = 0;
+    table.on('awaitNextHand', () => { awaitCount++; });
+    // 두 사람 모두 체크/콜만 하도록(폴드 없이) 진행시켜 매 핸드 결과 확인 대기가 걸리게 한다.
+    const autoCall = () => {
+      const st = table.engine;
+      if (st.actingSeat === -1 || table.status !== 'in_progress') return;
+      const seat = st.seats[st.actingSeat];
+      if (!seat || seat.type !== 'human') return;
+      const legal = st.getLegalActions(st.actingSeat);
+      if (!legal) return;
+      const action = legal.canCheck ? 'check' : legal.canCall ? 'call' : 'allin';
+      try { table.handleAction(seat.playerId, action, 0); } catch (e) { /* 무시 */ }
+    };
+    table.on('state', autoCall);
+    table.start();
+    await wait(400);
+    const handNumberBefore = table.engine.handNumber;
+    assert.ok(awaitCount > 0, '두 사람 다 살아있으면 결과 확인 대기를 걸어야 함');
+
+    // 게스트 혼자 "준비"를 눌러도 호스트가 안 눌렀으면 다음 핸드로 넘어가면 안 된다.
+    table.handleReadyForNextHand('guest1');
+    await wait(300);
+    assert.strictEqual(table.engine.handNumber, handNumberBefore, '게스트 혼자만의 준비로는 다음 핸드로 넘어가면 안 됨');
+
+    // 호스트가 누르면(게스트 동의와 무관하게) 바로 다음 핸드로 진행되어야 한다.
+    table.handleReadyForNextHand('host1');
+    await wait(400);
+    assert.ok(table.engine.handNumber > handNumberBefore, '호스트가 누르면 게스트 동의 없이 다음 핸드로 진행되어야 함');
+    table._closeRoom('test done');
+  });
+
   await check('AI 파산 시 자동으로 리바인되지 않고, 사람이 좌석을 클릭해 직접 결정해야 함', async () => {
     const table = new TableManager({
       hostId: 'host1',
@@ -900,6 +995,74 @@ async function run() {
         assert.strictEqual(lens[i], lens[i - 1] + 1, `보드 카드는 한 번에 한 장씩만 공개되어야 함 (관찰된 길이: ${lens.join(',')})`);
       }
     }
+  });
+
+  await check('사람 전용 베팅 제한시간(actionTimeLimitSec): 시간 초과 시 자동으로 체크/폴드 처리됨', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      actionTimeLimitSec: 1, // 짧게 잡아서 테스트가 오래 걸리지 않게 함
+      maxRebuys: 999,
+      shuffleSeatsOnStart: false,
+    });
+    let clockEvents = 0;
+    let lastClockPayload = null;
+    table.on('actionClock', (info) => {
+      clockEvents++;
+      lastClockPayload = info;
+    });
+    table.on('waitingForAiRebuy', ({ seats }) => {
+      for (const s of seats) { try { table.handleAiRebuyDecision('host1', s, true); } catch (e) { /* 무시 */ } }
+    });
+    table.on('awaitNextHand', () => table.handleReadyForNextHand('host1'));
+
+    // 호스트는 일부러 아무 액션도 하지 않는다 - 제한시간이 지나면 서버가 알아서
+    // 체크(가능하면) 또는 폴드로 자동 처리해줘야 게임이 멈추지 않는다.
+    table.start();
+    await wait(2500);
+    table._closeRoom('test done');
+
+    assert.ok(clockEvents > 0, '사람 차례가 되면 actionClock 이벤트가 발생해야 함');
+    assert.strictEqual(lastClockPayload.limitSec, 1, 'actionClock 페이로드에 설정한 제한시간이 그대로 담겨야 함');
+    assert.ok(typeof lastClockPayload.deadline === 'number' && lastClockPayload.deadline > Date.now() - 3000);
+    // 호스트가 한 번도 직접 액션하지 않았는데도, 자동 체크/폴드 덕분에 핸드가 진행되어 최소
+    // 한 번은 다음 핸드로 넘어갔어야 한다(그렇지 않으면 게임이 첫 핸드에서 멈춰있게 됨).
+    assert.ok(table.engine.handNumber >= 2, `자동 처리로 핸드가 계속 진행되어야 함 (실제 handNumber: ${table.engine.handNumber})`);
+  });
+
+  await check('사람 전용 베팅 제한시간은 AI 차례에는 적용되지 않음(actionClock이 AI 좌석으로는 발생하지 않음)', async () => {
+    const table = new TableManager({
+      hostId: 'host1',
+      hostName: 'Host',
+      aiCount: 1,
+      startingStack: 3000,
+      interHandDelayMs: 10,
+      aiActionDelayMs: 0,
+      actionTimeLimitSec: 1,
+      maxRebuys: 999,
+      shuffleSeatsOnStart: false,
+    });
+    const clockSeats = new Set();
+    table.on('actionClock', ({ seatIndex }) => clockSeats.add(seatIndex));
+    table.on('waitingForAiRebuy', ({ seats }) => {
+      for (const s of seats) { try { table.handleAiRebuyDecision('host1', s, true); } catch (e) { /* 무시 */ } }
+    });
+    table.on('awaitNextHand', () => table.handleReadyForNextHand('host1'));
+
+    // 호스트는 일부러 아무 액션도 하지 않는다 - 제한시간 초과로 자동 처리되면서 게임이
+    // 진행되는 동안, AI 차례에는 actionClock이 걸리지 않는지 확인한다.
+    const aiSeatIndex = table.engine.seats.findIndex((s) => s && s.type === 'ai');
+    const humanSeatIndex = table.engine.seats.findIndex((s) => s && s.type === 'human');
+    table.start();
+    await wait(2500);
+    table._closeRoom('test done');
+
+    assert.ok(clockSeats.has(humanSeatIndex), '사람(호스트) 좌석에는 actionClock이 걸려야 함');
+    assert.ok(!clockSeats.has(aiSeatIndex), 'AI 좌석에는 actionClock이 걸리면 안 됨');
   });
 
   console.log(`TableManager: ${n}개 테스트 통과`);

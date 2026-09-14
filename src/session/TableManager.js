@@ -4,6 +4,7 @@ const EventEmitter = require('events');
 const { GameEngine } = require('../game/GameEngine');
 const { BlindStructure, generateDefaultLevels } = require('../game/BlindStructure');
 const { decideAction } = require('../ai/AIDecisionEngine');
+const { OpponentModel } = require('../ai/OpponentModel');
 const { cardToString } = require('../game/Deck');
 
 // 블라인드 구조에 한 번에 넣을 수 있는 레벨 수 상한(휴식 포함). 실수로 수백 개를 넣는 것을 방지.
@@ -24,17 +25,22 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
   'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'blindLevels',
-  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs',
+  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
-  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
+  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
   'interHandDelayMs',
 ]);
 
 // 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
 // "다음 핸드 준비" 대기를 영원히 막는 일이 없도록 실제로 나간 것으로 처리한다.
-const DISCONNECT_LEAVE_MS = 45000;
+// 예전에는 45초로 너무 짧아서, 잠깐 카톡을 보거나 전화를 받는 사이 모바일 브라우저가
+// 백그라운드에서 소켓 연결을 끊어버리면(모바일 브라우저 특성상 흔함) 몇 분 안에 못 돌아올
+// 경우 자리에서 완전히 밀려나 버렸다. 그동안 그 사람 차례가 와도 12초 뒤 자동 체크/폴드로
+// 처리되어(_scheduleDisconnectGuard) 게임 진행 자체는 막히지 않으므로, 좌석을 실제로 비우기까지의
+// 유예 시간은 넉넉하게 5분으로 늘려서 잠깐 자리를 비운 정도로는 밀려나지 않게 한다.
+const DISCONNECT_LEAVE_MS = 5 * 60 * 1000;
 
 // 올인 쇼다운(남은 스트리트를 한 번에 몰아서 진행하는 경우) 카드를 한 장씩 순서대로 공개할 때
 // 카드 사이에 두는 텀(ms)
@@ -58,6 +64,9 @@ class TableManager extends EventEmitter {
    * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
    * @param {number} [config.aiActionDelayMs] AI 액션 사이 텀, 기본 5000
+   * @param {number} [config.actionTimeLimitSec] 사람 전용 베팅 제한시간(초). 0=제한없음(기본값).
+   *   1~99 사이로 설정하면 사람 차례에만 적용되며(AI는 영향 없음), 시간이 지나면 자동으로
+   *   체크(가능하면) 또는 폴드 처리된다.
    * @param {number} [config.maxRebuys] 최대 리바인 횟수. 0=리바인 불가, 기본 0
    * @param {number} [config.addOnAmount] 0=비활성화, 기본 0
    * @param {boolean} [config.shuffleSeatsOnStart] 게임 시작 시 좌석을 무작위로 섞을지 여부. 기본 true(테스트 전용 옵션)
@@ -75,6 +84,9 @@ class TableManager extends EventEmitter {
       aiSkillLevel: config.aiSkillLevel != null ? Math.max(0, Math.min(100, config.aiSkillLevel)) : 75,
       interHandDelayMs: config.interHandDelayMs != null ? config.interHandDelayMs : 5000,
       aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 1500,
+      // 사람 전용 베팅 제한시간(초). 0=제한없음(기존과 동일). 1 이상이면 사람 차례가 왔을 때
+      // 이 시간이 지나도록 액션이 없으면 자동으로 체크/폴드 처리한다(AI에는 영향 없음).
+      actionTimeLimitSec: config.actionTimeLimitSec != null ? Math.max(0, Math.min(99, config.actionTimeLimitSec)) : 0,
       // 0이면 리바인이 아예 불가능함을 의미한다(과거에는 0=무제한이었으나, 사람이 리바인을
       // 명시적으로 통제할 수 있도록 "무제한" 개념 자체를 없앴다). 기본값은 1회.
       maxRebuys: config.maxRebuys != null ? config.maxRebuys : 1,
@@ -91,6 +103,11 @@ class TableManager extends EventEmitter {
     this.shuffleSeatsOnStart = config.shuffleSeatsOnStart !== false;
     this.engine = new GameEngine({ maxSeats: this.maxSeats, rng: this.rng });
     this.engine.on('action', (record) => this.emit('playerAction', record));
+    // 테이블(방) 하나당 하나씩, 여러 핸드에 걸쳐 각 좌석의 성향(폴드율/공격성 등)을 누적
+    // 추적한다. AI 실력(aiSkillLevel)이 높을수록 이 통계를 참고해 상대별로 다르게 플레이한다
+    // (익스플로잇). 방이 끝날 때까지 이어지므로 여기 생성자에서 한 번만 만든다.
+    this.opponentModel = new OpponentModel();
+    this.engine.on('action', (record) => this.opponentModel.recordAction(record));
 
     this.blinds = new BlindStructure({
       levels: config.blindLevels && config.blindLevels.length ? config.blindLevels : generateDefaultLevels(this.config.bbAnte),
@@ -194,6 +211,9 @@ class TableManager extends EventEmitter {
     this.humanBySeat[seatIdx].connected = true;
     this.humanBySeat[seatIdx].disconnectedAt = null;
     clearTimeout(this._disconnectGuardTimer);
+    // 재접속한 시점이 마침 이 사람 차례라면, 베팅 제한시간이 켜져 있는 경우 그때부터 다시
+    // 정상적으로 카운트다운이 시작되게 한다(그동안은 접속이 끊겨 있었으니 적용되지 않았음).
+    this._scheduleActionClock();
     return seatIdx;
   }
 
@@ -226,7 +246,13 @@ class TableManager extends EventEmitter {
       if (now - meta.disconnectedAt < DISCONNECT_LEAVE_MS) continue;
 
       const playerId = meta.playerId;
-      if (seatIdx === 0) {
+      // 호스트 여부는 좌석 번호(0번)가 아니라 실제 playerId로 판정해야 한다. 게임 시작 시
+      // 좌석이 무작위로 섞이므로(_shuffleSeats), 호스트가 항상 좌석 0에 있다는 보장이 없다.
+      // (이 부분이 seatIdx === 0으로 되어 있으면, 셔플 후 우연히 좌석 0에 앉은 게스트가 잠깐
+      // 접속이 끊겼을 뿐인데 방 전체가 종료되거나, 반대로 호스트 본인이 다른 좌석에서 끊겼을 때
+      // 그냥 평범한 게스트처럼 좌석에서 밀려나 버리는 문제가 있었다 - 사용자가 "잘 하다가
+      // 갑자기 사라진다"고 느낀 원인 중 하나)
+      if (playerId === this.hostId) {
         this._closeRoom('호스트의 연결이 오래 끊겨 게임이 종료되었습니다');
         return true;
       }
@@ -269,6 +295,41 @@ class TableManager extends EventEmitter {
   _broadcastState() {
     this.emit('state', this.getPublicState());
     this._scheduleDisconnectGuard();
+    this._scheduleActionClock();
+  }
+
+  // 사람 전용 베팅 제한시간(actionTimeLimitSec). 접속이 끊긴 사람은 이미 _scheduleDisconnectGuard가
+  // (설정값과 무관하게 12초 뒤 자동 체크/폴드로) 처리하므로, 여기서는 "지금 접속되어 있는" 사람
+  // 차례일 때만 적용한다. AI 차례에는 적용하지 않는다(AI는 aiActionDelayMs로 별도 진행).
+  _scheduleActionClock() {
+    clearTimeout(this._actionClockTimer);
+    if (this.status !== 'in_progress') return;
+    const limitSec = this.config.actionTimeLimitSec;
+    if (!limitSec || limitSec <= 0) return;
+    const seatIdx = this.engine.actingSeat;
+    if (seatIdx == null || seatIdx === -1) return;
+    const seat = this.engine.seats[seatIdx];
+    if (!seat || seat.type !== 'human') return;
+    const meta = this.humanBySeat[seatIdx];
+    if (!meta || !meta.connected) return;
+
+    const deadline = Date.now() + limitSec * 1000;
+    // 클라이언트는 이 마감 시각(deadline) 하나만 받아서 로컬에서 매초 남은 시간을 계산해
+    // 보여준다(서버가 매초 이벤트를 보낼 필요 없음). 본인/상대방 화면 모두 동일하게 보인다.
+    this.emit('actionClock', { seatIndex: seatIdx, deadline, limitSec });
+
+    this._actionClockTimer = setTimeout(() => {
+      if (this.status !== 'in_progress' || this.engine.actingSeat !== seatIdx) return;
+      const legal = this.engine.getLegalActions(seatIdx);
+      if (!legal) return;
+      try {
+        const boardLenBefore = this.engine.board.length;
+        this.engine.applyAction(seatIdx, legal.canCheck ? 'check' : 'fold', 0);
+        this._revealBoardThenContinue(boardLenBefore, () => this._runAiLoop());
+      } catch (e) {
+        // 무시: 타이밍 경합으로 이미 처리된 액션
+      }
+    }, limitSec * 1000);
   }
 
   // ---------- 설정 변경 (로비: 폭넓게 / 진행 중: 일부만) ----------
@@ -325,6 +386,11 @@ class TableManager extends EventEmitter {
     }
     if ('aiActionDelayMs' in applied) {
       this.config.aiActionDelayMs = Math.max(0, Math.min(15000, Number(applied.aiActionDelayMs)));
+    }
+    if ('actionTimeLimitSec' in applied) {
+      this.config.actionTimeLimitSec = Math.max(0, Math.min(99, Number(applied.actionTimeLimitSec) || 0));
+      // 진행 중에 값이 바뀌면, 지금 사람 차례라면 새 제한시간 기준으로 다시 스케줄링한다.
+      this._scheduleActionClock();
     }
     if ('maxRebuys' in applied) this.config.maxRebuys = Math.max(0, Number(applied.maxRebuys) || 0);
     if ('addOnAmount' in applied) this.config.addOnAmount = Math.max(0, Number(applied.addOnAmount) || 0);
@@ -434,6 +500,7 @@ class TableManager extends EventEmitter {
     this._lastHandResult = null;
     this._awaitingConfirmInfo = null;
     this.engine.startHand();
+    this.opponentModel.recordHandStart(this.engine.handSeatsInOrder());
     this._broadcastState();
     this._runAiLoop();
   }
@@ -479,6 +546,7 @@ class TableManager extends EventEmitter {
     const decision = decideAction(this.engine, seat.seatIndex, {
       mistakeRate: this.config.aiMistakeRate,
       skillLevel: this.config.aiSkillLevel,
+      opponentModel: this.opponentModel,
     });
     // 사람이 이번 핸드에서 이미 전부 죽었다면(폴드/미참여) AI끼리만 남은 상황이므로
     // 굳이 텀을 두지 않고 빠르게 진행한다 (아무도 지켜볼 필요가 없는 AI vs AI 액션)
@@ -648,9 +716,15 @@ class TableManager extends EventEmitter {
       return;
     }
 
-    // 리바인 결정을 기다리는 동안 이미 전원이 "다음 핸드 준비"를 눌러뒀을 수도 있으므로,
-    // 여기서 바로 확인해서 그렇다면 대기 화면을 띄우지 않고 곧장 다음 핸드로 넘어간다.
-    if (humanSeats.every((idx) => this.readyForNext.has(idx))) {
+    // 다음 핸드로 넘어가는 건 이제 다른 사람들의 동의 없이 "호스트"만 결정한다(게스트가
+    // 결과를 다 보기 전에 호스트가 넘겨도 되고, 반대로 게스트가 안 눌러서 게임이 막히는
+    // 일도 없다). 호스트가 이미 좌석에 없다면(파산 후 완전히 퇴장 등) 예전처럼 접속 중인
+    // 전원 기준으로 안전하게 대기한다.
+    const requiredSeats = this._nextHandReadyRequirement(humanSeats);
+
+    // 리바인 결정을 기다리는 동안 이미 필요한 사람이 "다음 핸드 준비"를 눌러뒀을 수도
+    // 있으므로, 여기서 바로 확인해서 그렇다면 대기 화면을 띄우지 않고 곧장 다음 핸드로 넘어간다.
+    if (requiredSeats.every((idx) => this.readyForNext.has(idx))) {
       this._scheduleNextHand(0);
       return;
     }
@@ -661,6 +735,15 @@ class TableManager extends EventEmitter {
     clearTimeout(this._nextHandFallbackTimer);
     // 응답 없는(자리 비움) 플레이어 때문에 게임이 영원히 멈추지 않도록 하는 안전장치
     this._nextHandFallbackTimer = setTimeout(() => this._playNextHand(), 20000);
+  }
+
+  // 다음 핸드로 넘어가기 위해 "준비"를 눌러야 하는 좌석 집합. 원칙은 호스트 한 명만 누르면
+  // 되는 것이지만, 호스트가 이미 이 방에 앉아있지 않다면(파산 후 리바인하지 않고 완전히
+  // 퇴장한 경우 등) 대신 결정해줄 사람이 없으므로 예전 방식(접속 중인 사람 전원)으로 되돌아간다.
+  _nextHandReadyRequirement(connectedHumanSeats) {
+    const hostSeatIdx = this.seatByPlayer[this.hostId];
+    if (hostSeatIdx != null && connectedHumanSeats.includes(hostSeatIdx)) return [hostSeatIdx];
+    return connectedHumanSeats;
   }
 
   handleReadyForNextHand(playerId) {
@@ -675,8 +758,11 @@ class TableManager extends EventEmitter {
     this.emit('readyStateChanged', { readySeats: [...this.readyForNext] });
     if (this.pendingRebuy.size > 0) return; // 리바인 결정이 끝나면 _afterHandEndScheduling에서 이어서 확인함
 
+    // 다음 핸드 진행은 이제 호스트 혼자 결정한다(다른 사람의 동의 불필요) - 호스트가 없으면
+    // 예전처럼 접속 중인 사람 전원 기준으로 대기한다.
     const humanSeats = this._connectedHumanSeats();
-    const allReady = humanSeats.length > 0 && humanSeats.every((idx) => this.readyForNext.has(idx));
+    const requiredSeats = this._nextHandReadyRequirement(humanSeats);
+    const allReady = requiredSeats.length > 0 && requiredSeats.every((idx) => this.readyForNext.has(idx));
     if (allReady) {
       clearTimeout(this._nextHandFallbackTimer);
       this._scheduleNextHand(0);
@@ -790,6 +876,7 @@ class TableManager extends EventEmitter {
     clearTimeout(this._aiActionTimer);
     clearTimeout(this._nextHandFallbackTimer);
     clearTimeout(this._boardRevealTimer);
+    clearTimeout(this._actionClockTimer);
     this._aiLoopActive = false;
     this._awaitingAiRebuy = false;
     this.emit('roomClosed', { reason });

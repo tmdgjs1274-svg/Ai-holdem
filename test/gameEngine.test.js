@@ -113,6 +113,84 @@ function run() {
     assert.strictEqual(eng.street, 'showdown');
     const totalAfter = eng.totalChipsOnTable();
     assert.strictEqual(totalBefore, totalAfter, '칩 총량 보존 (사이드팟 포함)');
+
+    // 메인팟/사이드팟 구분이 정확한지도 함께 확인한다: 실제로 여러 팟이 만들어졌다면
+    // (숏스택이 올인 -> 나머지 둘도 콜/올인이면 사이드팟이 생김), index 0은 항상 메인팟이고
+    // mainWinnerSeats는 그 메인팟의 승자와 정확히 일치해야 한다.
+    if (eng.lastHandResult.type === 'showdown' && eng.lastHandResult.pots.length > 1) {
+      const pots = eng.lastHandResult.pots;
+      assert.strictEqual(pots[0].isMain, true, '첫 번째 팟은 메인팟이어야 함');
+      for (let i = 1; i < pots.length; i++) {
+        assert.strictEqual(pots[i].isMain, false, `${i}번째 팟은 사이드팟이어야 함`);
+      }
+      assert.deepStrictEqual(
+        [...eng.lastHandResult.mainWinnerSeats].sort(),
+        [...pots[0].winners].sort(),
+        'mainWinnerSeats는 메인팟(pots[0]) 승자와 정확히 일치해야 함'
+      );
+    }
+  });
+
+  check('벳/레이즈 라벨 구분: 이 스트리트에 아직 베팅이 없으면 "벳", 이미 베팅이 있으면 "레이즈"', () => {
+    const eng = makeEngine(2, { rng: seedRng(5) });
+    eng.startHand();
+    // 프리플랍은 이미 빅블라인드(강제 베팅)가 있는 상태이므로, 첫 오픈레이즈도 관례상 "레이즈"로 남는다.
+    let s = eng.actingSeat;
+    const preflopRecords = [];
+    eng.on('action', (r) => preflopRecords.push(r));
+    eng.applyAction(s, 'raise', 150);
+    assert.strictEqual(preflopRecords[0].actionType, 'raise', '프리플랍 오픈레이즈는 그대로 레이즈로 남아야 함');
+    eng.applyAction(eng.actingSeat, 'call');
+    assert.strictEqual(eng.street, 'flop');
+
+    // 플랍(포스트플랍)에서는 이번 스트리트에 아직 아무도 베팅하지 않았으므로, 첫 액션은 "벳"이어야 한다.
+    const flopRecords = [];
+    eng.on('action', (r) => flopRecords.push(r));
+    const better = eng.actingSeat;
+    eng.applyAction(better, 'raise', eng.currentBet + eng.bigBlind); // 클라이언트/AI는 여전히 'raise'로 보냄
+    assert.strictEqual(flopRecords[0].actionType, 'bet', '이 스트리트의 첫 베팅은 raise가 아니라 bet으로 기록되어야 함');
+
+    // 그 다음 사람이 다시 올리면(이미 베팅이 있는 상태) 이건 진짜 "레이즈"여야 한다.
+    const other = eng.actingSeat;
+    eng.applyAction(other, 'raise', eng.currentBet + eng.bigBlind * 2);
+    assert.strictEqual(flopRecords[1].actionType, 'raise', '이미 베팅이 있는 상태에서 올리는 건 레이즈여야 함');
+  });
+
+  check('actionLog: 이번 핸드의 액션이 street/toCallBefore와 함께 순서대로 쌓이고, 다음 핸드에서 초기화됨', () => {
+    const eng = makeEngine(2, { rng: seedRng(5) });
+    eng.startHand();
+    const s1 = eng.actingSeat;
+    eng.applyAction(s1, 'raise', 150); // 프리플랍 레이즈 (콜해야 할 금액이 있는 상태에서)
+    assert.strictEqual(eng.actionLog.length, 1);
+    assert.strictEqual(eng.actionLog[0].street, 'preflop');
+    assert.strictEqual(eng.actionLog[0].actionType, 'raise');
+    assert.ok(eng.actionLog[0].toCallBefore > 0, '레이즈 전에는 콜해야 할 금액이 있었어야 함');
+
+    eng.applyAction(eng.actingSeat, 'call');
+    assert.strictEqual(eng.street, 'flop');
+    const better = eng.actingSeat;
+    eng.applyAction(better, 'raise', eng.currentBet + eng.bigBlind); // 플랍 첫 베팅
+    const betEntry = eng.actionLog[eng.actionLog.length - 1];
+    assert.strictEqual(betEntry.street, 'flop');
+    assert.strictEqual(betEntry.actionType, 'bet');
+    assert.strictEqual(betEntry.toCallBefore, 0, '아무도 베팅하지 않은 상태에서의 첫 벳이므로 콜금액은 0이었어야 함');
+
+    const lengthBeforeNextHand = eng.actionLog.length;
+    assert.ok(lengthBeforeNextHand >= 3);
+
+    // 남은 액션 마무리 후 다음 핸드로 넘어가면 actionLog가 새로 초기화되어야 한다.
+    let guard = 0;
+    while (eng.street !== 'showdown' && guard < 50) {
+      guard++;
+      const seat = eng.actingSeat;
+      if (seat === -1) break;
+      const legal = eng.getLegalActions(seat);
+      if (legal.canCheck) eng.applyAction(seat, 'check');
+      else if (legal.canCall) eng.applyAction(seat, 'call');
+      else eng.applyAction(seat, 'fold');
+    }
+    eng.startHand();
+    assert.deepStrictEqual(eng.actionLog, [], '새 핸드가 시작되면 actionLog는 비어있어야 함');
   });
 
   check('최소 레이즈 미만 요청 시 자동 보정(최소레이즈로 클램프)', () => {

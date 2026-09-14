@@ -1,6 +1,25 @@
 'use strict';
 
-const socket = io();
+// reconnectionDelayMax를 짧게 잡아서, 잠깐 백그라운드에 있다가 돌아왔을 때 재연결 시도
+// 간격이 너무 길어지지 않게 한다(기본값 5초면 충분히 짧지만 명시적으로 고정해둔다).
+const socket = io({ reconnection: true, reconnectionDelay: 500, reconnectionDelayMax: 3000 });
+
+// 모바일 브라우저는 화면을 끄거나 다른 앱으로 전환하면(카톡 확인, 전화 수신 등) 탭을
+// 백그라운드로 보내면서 소켓 연결이 끊길 수 있다. socket.io는 보통 알아서 재연결을
+// 시도하지만, 탭이 완전히 절전 상태였다가 돌아오는 경우 그 재시도 타이머 자체가 늦게
+// 깨어날 수 있으므로, 화면이 다시 보이는 순간 곧바로 재연결을 시도해 체감 지연을 줄인다.
+function ensureSocketConnected() {
+  if (!socket.connected) socket.connect();
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureSocketConnected();
+  });
+  // iOS Safari 등에서 뒤로가기/앱 전환 복귀 시 bfcache로 페이지가 그대로 복원되는 경우
+  // visibilitychange만으로는 놓칠 수 있어 pageshow도 함께 잡아준다.
+  window.addEventListener('pageshow', ensureSocketConnected);
+  window.addEventListener('focus', ensureSocketConnected);
+}
 
 const el = (id) => document.getElementById(id);
 // 칩/금액 표시는 항상 천 단위 콤마를 넣어 보여준다 (입력 칸은 그대로 숫자만 받음)
@@ -10,7 +29,7 @@ function fmt(n) {
 const SUIT_SYMBOL = { s: '♠', h: '♥', d: '♦', c: '♣' };
 const RED_SUITS = new Set(['h', 'd']);
 const ACTION_LABEL = {
-  fold: '폴드', check: '체크', call: '콜', bet: '베팅', raise: '레이즈', allin: '올인',
+  fold: '폴드', check: '체크', call: '콜', bet: '벳', raise: '레이즈', allin: '올인',
 };
 
 // ---------- 액션 음성 안내 (체크/콜/레이즈/폴드/올인, 중저음 남자 목소리 느낌) ----------
@@ -22,6 +41,7 @@ const ACTION_LABEL = {
 const VOICE_ACTION_CONFIG = {
   check: { text: '체크', pitch: 0.55, rate: 1.05 },
   call: { text: '콜', pitch: 0.6, rate: 1.1 },
+  bet: { text: '벳', pitch: 0.62, rate: 1.15 },
   raise: { text: '레이즈', pitch: 0.65, rate: 1.2 },
   fold: { text: '폴드', pitch: 0.5, rate: 0.95 },
   allin: { text: '올인', pitch: 0.4, rate: 0.85 },
@@ -195,6 +215,26 @@ el('pot-display').addEventListener('click', toggleChipDisplayMode);
 
 // 좌석별 트랜션트 액션 말풍선 상태: { [seatIndex]: { text, cls } }
 const activeBubbles = {};
+
+// ---------- 사람 전용 베팅 제한시간(액션 타임뱅크) 카운트다운 ----------
+// 서버가 마감 시각(deadline, epoch ms)만 한 번 보내주면, 클라이언트는 그 시각까지 남은
+// 시간을 로컬에서 매초 다시 계산해 보여준다(서버가 매초 이벤트를 보낼 필요 없음).
+// 본인 화면에서도, 상대방 화면에서도 동일하게 그 좌석 위에 카운트다운이 보인다.
+let actionClockInfo = null; // { seatIndex, deadline, limitSec }
+socket.on('actionClock', (info) => {
+  actionClockInfo = info;
+  if (latestState) renderTable();
+});
+function tickActionClock() {
+  if (!actionClockInfo || !latestState || latestState.actingSeat !== actionClockInfo.seatIndex) return;
+  const badge = document.querySelector(`.seat[data-seat="${actionClockInfo.seatIndex}"] .action-clock`);
+  if (!badge) return;
+  const remainMs = actionClockInfo.deadline - Date.now();
+  const secs = Math.max(0, Math.ceil(remainMs / 1000));
+  badge.textContent = `⏱${secs}`;
+  badge.classList.toggle('urgent', secs <= 5);
+}
+setInterval(tickActionClock, 250);
 // 블라인드 카운트다운을 실시간으로 표시하기 위한 로컬 기준점
 let blindTickBase = null; // { level, receivedAt }
 let blindTickTimer = null;
@@ -270,6 +310,7 @@ el('btn-create-submit').addEventListener('click', () => {
     maxRebuys: Number(el('create-maxRebuys').value),
     addOnAmount: Number(el('create-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('create-aiActionDelay').value) * 1000),
+    actionTimeLimitSec: Math.max(0, Math.min(99, Number(el('create-actionTimeLimit').value) || 0)),
     // 블라인드 구조("블라인드 구조 편집" 모달에서 편집)는 사용자가 한 번도 열지 않았다면
     // null이고, 그 경우 서버가 기본 12단계 표를 그대로 사용한다.
     blindLevels: currentBlindLevels || undefined,
@@ -370,6 +411,7 @@ function openSettingsModal() {
   el('set-maxRebuys').value = cfg.maxRebuys;
   el('set-addOnAmount').value = cfg.addOnAmount;
   el('set-aiActionDelay').value = Math.round((cfg.aiActionDelayMs / 1000) * 10) / 10;
+  el('set-actionTimeLimit').value = cfg.actionTimeLimitSec || 0;
   el('set-aiMistake').value = Math.round(cfg.aiMistakeRate * 100);
   el('set-aiMistake-label').textContent = Math.round(cfg.aiMistakeRate * 100);
   el('set-aiSkill').value = cfg.aiSkillLevel;
@@ -392,6 +434,7 @@ el('btn-settings-save').addEventListener('click', () => {
     maxRebuys: Number(el('set-maxRebuys').value),
     addOnAmount: Number(el('set-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
+    actionTimeLimitSec: Math.max(0, Math.min(99, Number(el('set-actionTimeLimit').value) || 0)),
     aiMistakeRate: Number(el('set-aiMistake').value) / 100,
     aiSkillLevel: Number(el('set-aiSkill').value),
   };
@@ -418,7 +461,7 @@ let blindEditorDraft = [];
 function defaultBlindLevels(bbAnte) {
   const sbAmounts = [100, 200, 300, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000];
   return sbAmounts.map((sb) => ({
-    sb, bb: sb * 2, ante: bbAnte ? sb * 2 : 0, durationMinutes: 7, isBreak: false,
+    sb, bb: sb * 2, ante: bbAnte ? sb * 2 : 0, durationMinutes: 5, isBreak: false,
   }));
 }
 function cloneLevels(levels) {
@@ -453,7 +496,13 @@ function renderBlindEditorTable() {
     if (lv.isBreak) tr.className = 'break-row';
     tr.innerHTML = `
       <td>${idx + 1}${lv.isBreak ? ' (휴식)' : ''}</td>
-      <td><input type="number" min="1" value="${lv.durationMinutes}" data-field="durationMinutes" data-idx="${idx}" /></td>
+      <td>
+        <div class="dur-stepper">
+          <button type="button" class="btn tiny ghost step-btn" data-dur-minus-idx="${idx}">－</button>
+          <input type="number" min="1" value="${lv.durationMinutes}" data-field="durationMinutes" data-idx="${idx}" />
+          <button type="button" class="btn tiny ghost step-btn" data-dur-plus-idx="${idx}">＋</button>
+        </div>
+      </td>
       <td class="cum-time">(${cumStr})</td>
       <td>${lv.isBreak ? '-' : `<input type="number" min="1" step="100" value="${lv.sb}" data-field="sb" data-idx="${idx}" />`}</td>
       <td>${lv.isBreak ? '-' : `<input type="number" min="2" step="100" value="${lv.bb}" data-field="bb" data-idx="${idx}" />`}</td>
@@ -481,7 +530,33 @@ el('blind-editor-tbody').addEventListener('click', (e) => {
   if (t.dataset && t.dataset.delIdx != null) {
     blindEditorDraft.splice(Number(t.dataset.delIdx), 1);
     renderBlindEditorTable();
+    return;
   }
+  // 시간(분) 입력 옆의 올리기/내리기 스테퍼: 텍스트 입력 없이도 1분 단위로 조정할 수 있게 한다.
+  if (t.dataset && t.dataset.durMinusIdx != null) {
+    const idx = Number(t.dataset.durMinusIdx);
+    if (blindEditorDraft[idx]) {
+      blindEditorDraft[idx].durationMinutes = Math.max(1, (Number(blindEditorDraft[idx].durationMinutes) || 0) - 1);
+      renderBlindEditorTable();
+    }
+    return;
+  }
+  if (t.dataset && t.dataset.durPlusIdx != null) {
+    const idx = Number(t.dataset.durPlusIdx);
+    if (blindEditorDraft[idx]) {
+      blindEditorDraft[idx].durationMinutes = Math.min(240, (Number(blindEditorDraft[idx].durationMinutes) || 0) + 1);
+      renderBlindEditorTable();
+    }
+  }
+});
+
+// 레벨 시간(분) 일괄변경: 휴식은 보통 다른 의도로 넣은 시간이므로 제외하고, 실제 블라인드
+// 레벨에만 한 번에 적용한다.
+el('btn-blind-bulk-apply').addEventListener('click', () => {
+  const v = Math.max(1, Math.min(240, Number(el('blind-bulk-duration').value) || 5));
+  blindEditorDraft = blindEditorDraft.map((lv) => (lv.isBreak ? lv : { ...lv, durationMinutes: v }));
+  renderBlindEditorTable();
+  toast(`휴식을 제외한 모든 레벨의 시간을 ${v}분으로 변경했어요`);
 });
 
 function lastRealLevel() {
@@ -495,7 +570,7 @@ el('btn-blind-add-level').addEventListener('click', () => {
   const bbAnte = el('blind-editor-bbAnte').checked;
   const sb = prev ? prev.sb * 2 : 100;
   const bb = sb * 2;
-  blindEditorDraft.push({ sb, bb, ante: bbAnte ? bb : 0, durationMinutes: 7, isBreak: false });
+  blindEditorDraft.push({ sb, bb, ante: bbAnte ? bb : 0, durationMinutes: 5, isBreak: false });
   renderBlindEditorTable();
 });
 el('btn-blind-add-break').addEventListener('click', () => {
@@ -593,6 +668,7 @@ socket.on('gameStarted', () => {
 socket.on('state', (state) => {
   const isNewHand = latestState && state.handNumber !== latestState.handNumber;
   latestState = state;
+  if (isNewHand || (actionClockInfo && state.actingSeat !== actionClockInfo.seatIndex)) actionClockInfo = null;
   if (state.status === 'in_progress' || state.status === 'closed') {
     if (!el('screen-table').classList.contains('active') && state.status === 'in_progress') {
       showScreen('screen-table');
@@ -614,17 +690,21 @@ socket.on('handResult', (result) => {
   renderResultModal(result);
 });
 
-socket.on('awaitNextHand', ({ humanSeats }) => {
+// 다음 핸드로 넘어가려면 이제 다른 사람들의 동의 없이 호스트 혼자 결정한다. 그래서 여기서는
+// 결과 화면 하단을 (호스트/게스트에 따라 다르게) applyResultFooterState()로 다시 그리기만 하면 된다.
+socket.on('awaitNextHand', () => {
   awaitingConfirm = true;
   iAmReady = false;
   clearTimeout(resultAutoTimer);
-  updateResultFooter(humanSeats || [], []);
+  applyResultFooterState();
 });
 
 socket.on('readyStateChanged', ({ readySeats }) => {
-  if (!awaitingConfirm) return;
-  const humanSeats = latestState ? latestState.seats.filter((s) => s && s.type === 'human').map((s) => s.seatIndex) : [];
-  updateResultFooter(humanSeats, readySeats || []);
+  if (!awaitingConfirm || !amIHost()) return; // 이제 호스트의 준비 여부만 의미가 있음
+  if (latestState && readySeats && readySeats.includes(latestState.mySeatIndex)) {
+    el('btn-result-next').disabled = true;
+    el('btn-result-next').textContent = '다음 핸드 시작 중…';
+  }
 });
 
 socket.on('rebuyRequired', ({ seatIndex, rebuysUsed, maxRebuys }) => {
@@ -935,6 +1015,14 @@ function renderTable() {
       seatDiv.appendChild(bubbleDiv);
     }
 
+    if (actionClockInfo && actionClockInfo.seatIndex === s.idx && state.actingSeat === s.idx) {
+      const clockDiv = document.createElement('div');
+      const secsNow = Math.max(0, Math.ceil((actionClockInfo.deadline - Date.now()) / 1000));
+      clockDiv.className = 'action-clock' + (secsNow <= 5 ? ' urgent' : '');
+      clockDiv.textContent = `⏱${secsNow}`;
+      seatDiv.appendChild(clockDiv);
+    }
+
     container.appendChild(seatDiv);
   });
 
@@ -1004,6 +1092,12 @@ function renderResultModal(result) {
     });
   } else {
     el('result-title').textContent = '쇼다운 결과';
+    // 사이드팟이 있으면(스택이 다른 사람들끼리 올인 등으로 팟이 나뉜 경우), 메인팟을 가져간
+    // 사람만 진짜 "승리자"이고, 사이드팟에서만 돈을 받은 사람은 "사이드"로 구분해서 보여준다.
+    // 그래야 "숏스택이 메인팟에서 최고 족보로 이겼는데, 스택 큰 두 명이 사이드팟만 나눠가진"
+    // 경우에 "더 높은 족보가 진 것처럼" 보이는 오해가 없어진다.
+    const mainWinnerSeats = new Set(result.mainWinnerSeats || []);
+    const hasSidePot = Array.isArray(result.pots) && result.pots.some((p) => !p.isMain);
     // 누가 어떤 핸드로 이기고 졌는지 한눈에 비교할 수 있도록, 획득한 금액이 큰 순서(승자 먼저)로 정렬한다.
     const entries = (result.showdown || []).slice().sort((a, b) => {
       const wa = (result.winnings && result.winnings[a.seatIndex]) || 0;
@@ -1012,6 +1106,8 @@ function renderResultModal(result) {
     });
     entries.forEach((entry) => {
       const amount = (result.winnings && result.winnings[entry.seatIndex]) || 0;
+      const isMainWinner = mainWinnerSeats.has(entry.seatIndex);
+      const isSideOnlyWinner = amount > 0 && !isMainWinner;
       const li = document.createElement('li');
       if (amount > 0) li.className = 'winner';
       const cardsWrap = document.createElement('div');
@@ -1022,10 +1118,16 @@ function renderResultModal(result) {
       const nameDiv = document.createElement('div');
       nameDiv.className = 'r-name';
       nameDiv.textContent = seatDisplayName(entry.seatIndex);
-      if (amount > 0) {
+      if (isMainWinner) {
         const badge = document.createElement('span');
         badge.className = 'r-badge';
         badge.textContent = '승리';
+        nameDiv.appendChild(badge);
+      } else if (isSideOnlyWinner) {
+        const badge = document.createElement('span');
+        badge.className = 'r-badge side';
+        badge.title = '메인팟이 아닌 사이드팟에서만 이겼어요';
+        badge.textContent = '사이드';
         nameDiv.appendChild(badge);
       }
       const handDiv = document.createElement('div');
@@ -1034,6 +1136,18 @@ function renderResultModal(result) {
       left.appendChild(nameDiv);
       left.appendChild(cardsWrap);
       left.appendChild(handDiv);
+      if (hasSidePot && (isMainWinner || isSideOnlyWinner)) {
+        const won = [];
+        (result.pots || []).forEach((p) => {
+          if (p.winners && p.winners.includes(entry.seatIndex)) won.push(p.isMain ? '메인팟' : '사이드팟');
+        });
+        if (won.length) {
+          const potNote = document.createElement('div');
+          potNote.className = 'r-pot-note';
+          potNote.textContent = won.join(' + ') + ' 획득';
+          left.appendChild(potNote);
+        }
+      }
 
       const amountDiv = document.createElement('div');
       amountDiv.className = 'r-amount';
@@ -1049,32 +1163,30 @@ function renderResultModal(result) {
   el('result-modal').classList.remove('hidden');
 }
 
-// 결과 화면 하단(자동 진행 안내 / 다음 핸드 준비 버튼)을 마지막 결과 기준으로 다시 그린다.
+// 결과 화면 하단(자동 진행 안내 / 다음 핸드 시작 버튼)을 마지막 결과 기준으로 다시 그린다.
 // 리바인 확인이 끝난 뒤 원래 안내로 복귀할 때도 재사용한다.
+// 다음 핸드 진행은 이제 다른 사람들의 동의 없이 "호스트"만 결정한다 - 호스트에게는 시작
+// 버튼을, 나머지 사람에게는 호스트를 기다린다는 안내와 (원하면 먼저 닫을 수 있는) 닫기
+// 버튼을 보여준다.
 function applyResultFooterState() {
   if (!lastResult) return;
   el('btn-result-next').classList.add('hidden');
   el('btn-result-next').disabled = false;
-  el('btn-result-next').textContent = '다음 핸드 준비 완료';
+  el('btn-result-next').textContent = '다음 핸드 시작';
 
   if (lastResult.requiresConfirm) {
-    el('result-hint').textContent = '모든 플레이어가 준비를 완료하면 다음 핸드가 시작됩니다.';
-    el('btn-result-next').classList.remove('hidden');
-    el('btn-result-close').classList.add('hidden'); // 준비 확인이 필요한 핸드는 버튼으로만 진행
+    if (amIHost()) {
+      el('result-hint').textContent = '준비되면 아래 버튼을 눌러 다음 핸드를 시작하세요.';
+      el('btn-result-next').classList.remove('hidden');
+      el('btn-result-close').classList.add('hidden'); // 호스트는 버튼으로만 진행
+    } else {
+      el('result-hint').textContent = '호스트가 다음 핸드를 시작할 때까지 기다려주세요.';
+      el('btn-result-close').classList.remove('hidden'); // 결과 확인만 하고 먼저 닫아도 됨(진행에는 영향 없음)
+    }
   } else {
     el('result-hint').textContent = '잠시 후 다음 핸드가 자동으로 시작됩니다…';
     el('btn-result-close').classList.remove('hidden');
     resultAutoTimer = setTimeout(hideResultModal, 5200);
-  }
-}
-
-function updateResultFooter(humanSeats, readySeats) {
-  if (!humanSeats.length) return;
-  const readySet = new Set(readySeats);
-  el('result-hint').textContent = `다음 핸드 준비: ${readySet.size}/${humanSeats.length}명 완료`;
-  if (latestState && readySet.has(latestState.mySeatIndex)) {
-    el('btn-result-next').disabled = true;
-    el('btn-result-next').textContent = '준비 완료 (다른 플레이어 대기 중…)';
   }
 }
 
@@ -1089,7 +1201,7 @@ el('btn-result-close').addEventListener('click', hideResultModal);
 el('btn-result-next').addEventListener('click', () => {
   iAmReady = true;
   el('btn-result-next').disabled = true;
-  el('btn-result-next').textContent = '준비 완료 (다른 플레이어 대기 중…)';
+  el('btn-result-next').textContent = '다음 핸드 시작 중…';
   socket.emit('readyForNextHand', {}, () => {});
 });
 
@@ -1104,10 +1216,29 @@ function alignRaiseTo100(value, legal) {
 
 const POT_QUICK_PCTS = [0.3, 0.5, 0.7, 1.0, 1.5];
 
-// 슬라이더와 직접입력 칸의 값을 항상 같이 맞춰준다.
-function setRaiseAmount(v) {
-  el('raise-slider').value = v;
-  el('raise-amount-input').value = v;
+// ---------- 베팅 컨트롤 표시 단위 변환 (칩 <-> bb) ----------
+// 서버에 실제로 전송되는 금액(sendAction)은 항상 칩 단위다. chipDisplayMode가 'bb'일 때는
+// 슬라이더/직접입력 칸에 "보여지고 사용자가 조작하는" 값만 bb 단위로 바꿔주고, 실제로
+// 액션을 보낼 때는 다시 칩 단위로 환산한다(팟/칩/스택 표시를 bb로 바꾸는 토글과 동일한 축).
+function chipsToDisplay(chips) {
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  if (!bb) return chips;
+  return Math.round((chips / bb) * 100) / 100; // bb 단위는 소수점 둘째 자리까지 보여줌
+}
+function displayToChips(displayValue) {
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  if (!bb) return Math.round(displayValue);
+  return Math.round(displayValue * bb);
+}
+
+// 슬라이더와 직접입력 칸의 값을 항상 같이 맞춰준다. raiseAmountChips가 항상 실제(칩) 단위의
+// 캐노니컬 값이고, 화면에는 현재 표시 단위(칩 또는 bb)로 변환한 값만 보여준다.
+let raiseAmountChips = 0;
+function setRaiseAmount(amountChips) {
+  raiseAmountChips = amountChips;
+  const displayValue = chipsToDisplay(amountChips);
+  el('raise-slider').value = displayValue;
+  el('raise-amount-input').value = displayValue;
 }
 
 function updateActionBar(state) {
@@ -1121,7 +1252,7 @@ function updateActionBar(state) {
 
   el('btn-check').style.display = legal.canCheck ? 'block' : 'none';
   el('btn-call').style.display = legal.canCall ? 'block' : 'none';
-  el('btn-call').textContent = legal.canCall ? `콜 (${fmt(legal.callAmount)})` : '콜';
+  el('btn-call').textContent = legal.canCall ? `콜 (${fmtChips(legal.callAmount)})` : '콜';
   el('btn-raise').style.display = legal.canRaise ? 'block' : 'none';
 
   const slider = el('raise-slider');
@@ -1135,10 +1266,13 @@ function updateActionBar(state) {
     const alignedMin = Math.ceil(legal.minRaiseTo / 100) * 100 <= legal.maxRaiseTo
       ? Math.ceil(legal.minRaiseTo / 100) * 100
       : legal.minRaiseTo;
-    slider.min = alignedMin;
-    slider.max = legal.maxRaiseTo;
-    amountInput.min = alignedMin;
-    amountInput.max = legal.maxRaiseTo;
+    const bbMode = chipDisplayMode === 'bb' && currentBB();
+    slider.min = chipsToDisplay(alignedMin);
+    slider.max = chipsToDisplay(legal.maxRaiseTo);
+    slider.step = bbMode ? 0.1 : 100;
+    amountInput.min = chipsToDisplay(alignedMin);
+    amountInput.max = chipsToDisplay(legal.maxRaiseTo);
+    amountInput.step = bbMode ? 0.1 : 100;
     setRaiseAmount(alignedMin);
     slider.disabled = false;
     amountInput.disabled = false;
@@ -1176,38 +1310,46 @@ el('btn-call').addEventListener('click', () => sendAction('call'));
 el('btn-allin').addEventListener('click', () => sendAction('allin'));
 el('btn-raise').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
-  const raw = Number(el('raise-amount-input').value);
-  const amount = legal ? alignRaiseTo100(raw, legal) : raw;
+  const amount = legal ? alignRaiseTo100(raiseAmountChips, legal) : raiseAmountChips;
   sendAction('raise', amount);
 });
 
 // ---------- 베팅 금액 직접 조작: 슬라이더 <-> +/- 스테퍼 <-> 직접입력 3방향 동기화 ----------
+// chipDisplayMode가 'bb'여도 화면에 보이는 값만 bb 단위일 뿐, 실제로 서버에 보내는 값은
+// 항상 raiseAmountChips(칩 단위)를 기준으로 계산한다.
 el('raise-slider').addEventListener('input', () => {
+  raiseAmountChips = displayToChips(Number(el('raise-slider').value));
   el('raise-amount-input').value = el('raise-slider').value;
 });
 el('btn-raise-minus').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
   if (!legal) return;
-  const current = Number(el('raise-amount-input').value) || Number(el('raise-slider').value) || 0;
-  setRaiseAmount(alignRaiseTo100(current - 100, legal));
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  const stepChips = bb ? Math.max(1, Math.round(bb * 0.1)) : 100; // bb 모드는 0.1bb씩, 칩 모드는 100칩씩
+  setRaiseAmount(alignRaiseTo100(raiseAmountChips - stepChips, legal));
 });
 el('btn-raise-plus').addEventListener('click', () => {
   const legal = latestState && latestState.legalActions;
   if (!legal) return;
-  const current = Number(el('raise-amount-input').value) || Number(el('raise-slider').value) || 0;
-  setRaiseAmount(alignRaiseTo100(current + 100, legal));
+  const bb = chipDisplayMode === 'bb' ? currentBB() : null;
+  const stepChips = bb ? Math.max(1, Math.round(bb * 0.1)) : 100;
+  setRaiseAmount(alignRaiseTo100(raiseAmountChips + stepChips, legal));
 });
 el('raise-amount-input').addEventListener('input', () => {
-  // 타이핑 중에는 100단위 정렬을 강제하지 않고 슬라이더만 실시간으로 맞춰준다.
+  // 타이핑 중에는 100단위 정렬을 강제하지 않고 슬라이더와 내부 칩 값만 실시간으로 맞춰준다.
   // (정렬은 change/blur 시점에만 적용해야 입력이 편함)
   const v = Number(el('raise-amount-input').value);
-  if (!Number.isNaN(v)) el('raise-slider').value = v;
+  if (!Number.isNaN(v)) {
+    raiseAmountChips = displayToChips(v);
+    el('raise-slider').value = el('raise-amount-input').value;
+  }
 });
 el('raise-amount-input').addEventListener('change', () => {
   const legal = latestState && latestState.legalActions;
   if (!legal) return;
-  const v = Number(el('raise-amount-input').value) || legal.minRaiseTo;
-  setRaiseAmount(alignRaiseTo100(v, legal));
+  const v = Number(el('raise-amount-input').value);
+  const chips = Number.isNaN(v) ? legal.minRaiseTo : displayToChips(v);
+  setRaiseAmount(alignRaiseTo100(chips, legal));
 });
 
 // ---------- 팟레이즈 콤보 드롭다운: 토글 + 바깥 클릭 시 닫기 ----------

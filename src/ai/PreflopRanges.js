@@ -128,7 +128,8 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
 
   // 실제 레이즈(또는 3벳 이상)에 대응하는 상황
   const bluffWindow = score >= callThresh - 1 && score < openThresh && ['BTN', 'CO', 'SB'].includes(ctx.position);
-  const bluffRoll = rng() < 0.12 && ctx.numActive <= 5;
+  // 3벳(이상) 블러프 확률. 0.12는 다소 잦다는 피드백을 반영해 0.09로 낮췄다.
+  const bluffRoll = rng() < 0.09 && ctx.numActive <= 5;
 
   if (score >= raiseThresh && legal.canRaise) {
     return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng) };

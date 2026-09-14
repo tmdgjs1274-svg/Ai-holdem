@@ -9,7 +9,7 @@
 
 // 방을 처음 만들 때 쓰이는 기본 12단계 표 (사용자가 제공한 실제 홈게임 블라인드표 기준).
 // bbAnte가 true면 모든 레벨의 ante를 그 레벨의 bb와 동일하게 채운다.
-function generateDefaultLevels(bbAnte = true, durationMinutes = 7) {
+function generateDefaultLevels(bbAnte = true, durationMinutes = 5) {
   const sbAmounts = [100, 200, 300, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000];
   return sbAmounts.map((sb) => ({
     sb,

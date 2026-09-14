@@ -198,6 +198,18 @@ input[type=range] { width: 100%; }
 /* 칩리더(현재 스택이 가장 많은 사람) 왕관 표시 */
 .seat .name-plate .crown { margin-right: 3px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 
+/* 사람 전용 베팅 제한시간(액션 타임뱅크) 카운트다운 - 본인/상대방 모두에게 보임 */
+.seat .action-clock {
+  position: absolute; top: -10px; left: -10px; background: #1a4a30; color: #cfe9db;
+  border: 1px solid #2a6b48; border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 800;
+  min-width: 22px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.seat .action-clock.urgent { background: #7a2020; border-color: #b3392f; color: #fff; animation: clockUrgentPulse 0.6s ease-in-out infinite; }
+@keyframes clockUrgentPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 /* 폴드 스탬프: 폴드한 플레이어를 명확하게 구분 */
 .seat .fold-stamp { display: none; }
 .seat.folded .fold-stamp {
@@ -316,6 +328,9 @@ input.raise-amount-input {
   display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
   background: #e2b93b; color: #123d2b; font-size: 10px; font-weight: 700; vertical-align: middle;
 }
+/* 사이드팟에서만 이긴 경우: 메인팟 승리(금색)와 구분되는 색으로 표시 */
+.result-list .r-badge.side { background: #4a7fd1; color: #0c1c33; }
+.result-list .r-pot-note { color: #9fd8ba; font-size: 11px; margin-top: 2px; }
 
 /* 결과 모달 안에 이어지는 리바인 확인 영역 (별도 모달로 겹치지 않도록 병합) */
 .result-rebuy { margin-top: 16px; text-align: center; }
@@ -341,6 +356,16 @@ input.raise-amount-input {
   padding: 3px 8px; cursor: pointer; font-size: 12px;
 }
 .blind-table .btn-del-row:hover { background: rgba(224,133,133,0.15); }
+
+/* 레벨 시간(분) 입력의 올리기/내리기 스테퍼 - 텍스트 입력은 그대로 유지하고 옆에 작게 붙인다 */
+.blind-table .dur-stepper { display: flex; align-items: center; justify-content: center; gap: 2px; }
+.blind-table .dur-stepper input[type="number"] { width: 40px; padding: 4px 2px; }
+.blind-table .dur-stepper .step-btn {
+  padding: 2px 6px; font-size: 12px; font-weight: 800; min-width: 20px; flex-shrink: 0;
+}
+.bulk-duration-row { align-items: center; flex-wrap: wrap; }
+.inline-num { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.inline-num input[type="number"] { width: 64px; }
 
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
