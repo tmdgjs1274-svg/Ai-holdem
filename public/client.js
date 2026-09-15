@@ -271,10 +271,8 @@ el('btn-go-join').addEventListener('click', () => showScreen('screen-join'));
 })();
 
 el('create-aiCount').addEventListener('input', (e) => (el('ai-count-label').textContent = e.target.value));
-el('create-aiMistake').addEventListener('input', (e) => (el('ai-mistake-label').textContent = e.target.value));
 el('create-aiSkill').addEventListener('input', (e) => (el('ai-skill-label').textContent = e.target.value));
 el('set-aiCount').addEventListener('input', (e) => (el('set-aiCount-label').textContent = e.target.value));
-el('set-aiMistake').addEventListener('input', (e) => (el('set-aiMistake-label').textContent = e.target.value));
 el('set-aiSkill').addEventListener('input', (e) => (el('set-aiSkill-label').textContent = e.target.value));
 
 function toast(msg) {
@@ -303,7 +301,6 @@ el('btn-create-submit').addEventListener('click', () => {
   const opts = {
     hostName: el('create-name').value.trim() || '호스트',
     aiCount: Number(el('create-aiCount').value),
-    aiMistakeRate: Number(el('create-aiMistake').value) / 100,
     aiSkillLevel: Number(el('create-aiSkill').value),
     startingStack: Number(el('create-startingStack').value),
     rebuyAmount: Number(el('create-rebuyAmount').value),
@@ -412,8 +409,6 @@ function openSettingsModal() {
   el('set-addOnAmount').value = cfg.addOnAmount;
   el('set-aiActionDelay').value = Math.round((cfg.aiActionDelayMs / 1000) * 10) / 10;
   el('set-actionTimeLimit').value = cfg.actionTimeLimitSec || 0;
-  el('set-aiMistake').value = Math.round(cfg.aiMistakeRate * 100);
-  el('set-aiMistake-label').textContent = Math.round(cfg.aiMistakeRate * 100);
   el('set-aiSkill').value = cfg.aiSkillLevel;
   el('set-aiSkill-label').textContent = cfg.aiSkillLevel;
 
@@ -435,7 +430,6 @@ el('btn-settings-save').addEventListener('click', () => {
     addOnAmount: Number(el('set-addOnAmount').value),
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
     actionTimeLimitSec: Math.max(0, Math.min(99, Number(el('set-actionTimeLimit').value) || 0)),
-    aiMistakeRate: Number(el('set-aiMistake').value) / 100,
     aiSkillLevel: Number(el('set-aiSkill').value),
   };
   if (isLobby) {
@@ -1268,6 +1262,9 @@ function updateActionBar(state) {
   // 문제를 위해, 항상 현재 표시 단위를 라벨로 붙여준다.
   el('raise-amount-unit').textContent = chipDisplayMode === 'bb' && currentBB() ? 'BB' : '칩';
 
+  // 폴드는 대응해야 할 베팅이 있을 때만 의미가 있다(무료로 체크 가능한 상황에서는 폴드 버튼
+  // 자체를 숨긴다 - 실수로 손패를 날리는 것을 막기 위함. legal.canFold는 canCheck의 반대다).
+  el('btn-fold').style.display = legal.canFold ? 'block' : 'none';
   el('btn-check').style.display = legal.canCheck ? 'block' : 'none';
   el('btn-call').style.display = legal.canCall ? 'block' : 'none';
   el('btn-call').textContent = legal.canCall ? `콜 (${fmtChips(legal.callAmount)})` : '콜';

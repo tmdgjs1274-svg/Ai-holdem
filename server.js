@@ -116,7 +116,6 @@ io.on('connection', (socket) => {
         // 받는다. 세부 검증/정규화는 BlindStructure가 담당하므로 여기서는 개수만 제한한다.
         blindLevels: Array.isArray(opts && opts.blindLevels) ? opts.blindLevels.slice(0, 60) : undefined,
         bbAnte: opts ? opts.bbAnte !== false : true,
-        aiMistakeRate: clampFloat(opts && opts.aiMistakeRate, 0, 0.4, 0.08),
         aiSkillLevel: clampInt(opts && opts.aiSkillLevel, 0, 100, 75),
         aiActionDelayMs: clampInt(opts && opts.aiActionDelayMs, 0, 15000, 1500),
         actionTimeLimitSec: clampInt(opts && opts.actionTimeLimitSec, 0, 99, 0),

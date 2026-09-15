@@ -10,7 +10,7 @@ const {
 } = require('../src/ai/PostflopHeuristic');
 const { classifyBoardTexture } = require('../src/ai/BoardTexture');
 const { cardFromString } = require('../src/game/Deck');
-const { quirkFactor } = require('../src/ai/util');
+const { quirkFactor, bigBlunderChance } = require('../src/ai/util');
 
 function seedRng(seed) {
   // gameEngine.test.js와 동일한 결정적 PRNG (mulberry32)
@@ -84,6 +84,13 @@ function run() {
     assert.strictEqual(quirkFactor(-10), 3);
   });
 
+  check('bigBlunderChance: 예전의 별도 aiMistakeRate 축이 skillLevel 하나로 통합됨 - skillLevel=100이면 정확히 0', () => {
+    assert.strictEqual(bigBlunderChance(100), 0);
+    assert.ok(bigBlunderChance(0) > bigBlunderChance(50));
+    assert.ok(bigBlunderChance(50) > bigBlunderChance(100));
+    assert.strictEqual(bigBlunderChance(150), 0, '범위를 벗어난 입력도 안전하게 clamp됨');
+  });
+
   check('textureSizeAdjust: weight=0이면 조정 없이 원래 fraction 그대로', () => {
     const wetTexture = classifyBoardTexture(cards(['7s', '8s', '9s']));
     assert.strictEqual(textureSizeAdjust(0.6, wetTexture, 0), 0.6);
@@ -137,7 +144,7 @@ function run() {
     });
     const legal = { callAmount: 0, canCheck: true, canCall: false, canRaise: true, minRaiseTo: 100, maxRaiseTo: 5000, stack: 2000 };
     const rng = constRng(0.01); // 어떤 확률 분기든 "일어나는 쪽"으로 결정적으로 고정
-    const decision = decidePostflop(eng, 0, legal, { rng, mistakeRate: 0, skillLevel: 70 });
+    const decision = decidePostflop(eng, 0, legal, { rng, skillLevel: 70 });
     assert.strictEqual(decision.actionType, 'raise', '지연 블러프 계획이 있으면 약한 패라도 이번 스트리트에 베팅을 강행해야 함');
     assert.strictEqual(eng.hs[0].aiPlan, null, '계획은 한 번 쓰이면(도래한 스트리트에 도달하면) 지워져야 함');
   });
@@ -154,7 +161,7 @@ function run() {
     // rng를 아주 크게 고정해서, "계획이 아니었다면 통상적인 블러프/플랜설정 확률" 자체가 전부
     // 실패하도록 만든다 - 그래야 혹시 계획이 잘못 적용됐는지(강제 베팅) 아닌지가 명확히 갈린다.
     const rng = constRng(0.99);
-    const decision = decidePostflop(eng, 0, legal, { rng, mistakeRate: 0, skillLevel: 70 });
+    const decision = decidePostflop(eng, 0, legal, { rng, skillLevel: 70 });
     assert.strictEqual(decision.actionType, 'check', '대상 스트리트가 아직 아니므로 강제 베팅이 일어나선 안 됨');
     assert.strictEqual(eng.hs[0].aiPlan, null, '스트리트가 맞지 않는 낡은 계획도 소비(제거)되어야 함');
   });
@@ -171,7 +178,7 @@ function run() {
     });
     const legal = { callAmount: 200, canCheck: false, canCall: true, canRaise: true, minRaiseTo: 600, maxRaiseTo: 5000, stack: 3000 };
     const rng = constRng(0.01);
-    const decision = decidePostflop(eng, 0, legal, { rng, mistakeRate: 0, skillLevel: 70 });
+    const decision = decidePostflop(eng, 0, legal, { rng, skillLevel: 70 });
     assert.strictEqual(decision.actionType, 'raise', '슬로우플레이 계획이 실현되면 콜만 하지 않고 체크레이즈로 되받아쳐야 함');
     assert.strictEqual(eng.hs[0].aiPlan, null);
   });
@@ -186,7 +193,7 @@ function run() {
     });
     const legal = { callAmount: 0, canCheck: true, canCall: false, canRaise: true, minRaiseTo: 100, maxRaiseTo: 5000, stack: 2000 };
     const rng = seedRng(7);
-    assert.doesNotThrow(() => decidePostflop(eng, 0, legal, { rng, mistakeRate: 0.05, skillLevel: 5 }));
+    assert.doesNotThrow(() => decidePostflop(eng, 0, legal, { rng, skillLevel: 5 }));
   });
 
   check('상대 레인지 추정: skillLevel이 높아도(rangeWeight>0) 크래시 없이 정상 동작', () => {
@@ -199,7 +206,7 @@ function run() {
     });
     const legal = { callAmount: 0, canCheck: true, canCall: false, canRaise: true, minRaiseTo: 100, maxRaiseTo: 5000, stack: 2000 };
     const rng = seedRng(7);
-    assert.doesNotThrow(() => decidePostflop(eng, 0, legal, { rng, mistakeRate: 0.05, skillLevel: 100 }));
+    assert.doesNotThrow(() => decidePostflop(eng, 0, legal, { rng, skillLevel: 100 }));
   });
 
   check('멀티스트리트 플랜 생성: 실력이 높고 아주 강한 패로 체크 상황이 반복되면, 여러 번 중 최소 한 번은 슬로우플레이 계획이 세워짐', () => {
@@ -216,7 +223,7 @@ function run() {
         opponentSeats: [1],
       });
       const rng = seedRng(1000 + trial);
-      decidePostflop(eng, 0, legal, { rng, mistakeRate: 0, skillLevel: 100 });
+      decidePostflop(eng, 0, legal, { rng, skillLevel: 100 });
       if (eng.hs[0].aiPlan && eng.hs[0].aiPlan.type === 'slowplay') planSetCount++;
     }
     assert.ok(planSetCount > 0, `${60}번 중 슬로우플레이 계획이 최소 한 번은 세워졌어야 함 (실제: ${planSetCount}번)`);

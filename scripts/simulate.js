@@ -9,7 +9,7 @@ const { decideAction } = require('../src/ai/AIDecisionEngine');
 function main() {
   const numPlayers = parseInt(process.argv[2], 10) || 6;
   const numHands = parseInt(process.argv[3], 10) || 500;
-  const mistakeRate = 0.08;
+  const skillLevel = 75;
   const startingStack = 10000;
 
   const eng = new GameEngine({ maxSeats: 9 });
@@ -37,7 +37,7 @@ function main() {
       const s = eng.actingSeat;
       if (s === -1) break;
       const wasPreflop = eng.street === 'preflop';
-      const decision = decideAction(eng, s, { mistakeRate });
+      const decision = decideAction(eng, s, { skillLevel });
       if (wasPreflop) {
         if (['call', 'raise', 'allin'].includes(decision.actionType)) seatVpip[s] = true;
         if (['raise', 'allin'].includes(decision.actionType)) seatPfr[s] = true;

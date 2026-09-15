@@ -260,7 +260,11 @@ class GameEngine extends EventEmitter {
     const maxRaiseTo = hs.committedThisStreet + seat.stack; // 올인
     const canRaise = seat.stack > callAmount; // 콜하고도 남는 칩이 있어야 레이즈 가능
     return {
-      canFold: true,
+      // 폴드는 "대응해야 할 베팅이 있을 때"만 의미가 있다(무료로 체크할 수 있는데 굳이 폴드하는
+      // 것은 실수로 손패를 날리는 것과 다름없어, 일반적인 홀덤 클라이언트들도 체크가 가능한
+      // 상황에서는 폴드 버튼을 따로 보여주지 않는다). 상대가 레이즈했거나(canCall) 프리플랍에서
+      // 빅블라인드 자체를 콜해야 하는 상황(마찬가지로 canCall)에서만 폴드가 가능하다.
+      canFold: !canCheck,
       canCheck,
       canCall,
       callAmount,
@@ -286,6 +290,7 @@ class GameEngine extends EventEmitter {
     const toCallBefore = legal.callAmount;
 
     if (actionType === 'fold') {
+      if (!legal.canFold) throw new Error('지금은 폴드할 수 없는 상황입니다 (무료로 체크 가능)');
       hs.folded = true;
       record.amount = 0;
     } else if (actionType === 'check') {

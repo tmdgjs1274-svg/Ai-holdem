@@ -16,6 +16,10 @@ function sanitize(legal, decision) {
   if (actionType === 'check' && !legal.canCheck) {
     actionType = legal.canCall ? 'call' : 'fold';
   }
+  if (actionType === 'fold' && !legal.canFold) {
+    // canFold가 false라는 건 무료로 체크 가능하다는 뜻이므로 체크로 대체한다.
+    actionType = 'check';
+  }
   if (actionType === 'raise' && (amount == null || Number.isNaN(amount))) {
     amount = legal.minRaiseTo;
   }
@@ -26,7 +30,7 @@ function sanitize(legal, decision) {
  * 좌석의 AI 액션을 결정한다.
  * @param {import('../game/GameEngine').GameEngine} engine
  * @param {number} seatIndex
- * @param {object} [opts] { mistakeRate, rng }
+ * @param {object} [opts] { skillLevel, rng, opponentModel } (예전의 mistakeRate는 skillLevel에 통합됨)
  * @returns {{ actionType: string, amount?: number }}
  */
 function decideAction(engine, seatIndex, opts = {}) {

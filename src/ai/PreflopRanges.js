@@ -1,7 +1,7 @@
 'use strict';
 
 const { chenScore } = require('./Equity');
-const { roundRaiseTo, quirkFactor } = require('./util');
+const { roundRaiseTo, quirkFactor, bigBlunderChance } = require('./util');
 const { getPositionCategory } = require('../game/Position');
 
 // 9-max 기준 포지션별 오픈레이즈 최소 점수 (풀링 기준선)
@@ -82,20 +82,21 @@ function sizePreflopRaise(engine, legal, ctx, rng) {
 /**
  * 프리플랍 액션 결정. 반환: { actionType, amount? }
  *
- * postflop과 마찬가지로 skillLevel(항상 적용되는 판단 잡음)과 mistakeRate(드문 큰 실수)를
- * 독립된 축으로 적용한다. skillLevel이 낮을수록 손패 강도 평가 자체가 흔들려서, 오픈/콜/폴드
- * 경계선에서 잘못된 선택을 더 자주 하게 된다.
+ * 예전에는 skillLevel(항상 적용되는 판단 잡음)과 mistakeRate(드문 큰 실수)를 독립된 축으로
+ * 따로 뒀지만, "실력을 100%로 올려도 mistakeRate 축이 남아있어 여전히 가끔 이상한 플레이가
+ * 나온다"는 혼란이 있어 이제는 큰 실수도 skillLevel 하나에서 유도한다(util.bigBlunderChance -
+ * skillLevel=100이면 정확히 0). skillLevel이 낮을수록 손패 강도 평가 자체가 흔들려서,
+ * 오픈/콜/폴드 경계선에서 잘못된 선택을 더 자주 하게 된다.
  */
 function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const rng = opts.rng || Math.random;
-  const mistakeRate = opts.mistakeRate != null ? opts.mistakeRate : 0.08;
   const skill = Math.max(0, Math.min(100, opts.skillLevel != null ? opts.skillLevel : 75));
   const ctx = buildPreflopContext(engine, seatIndex);
   // skill===75(기존 기본값)에서는 1이라서 아래 고정 확률 잡버릇들의 세기가 그대로 유지되고,
   // skill=100이면 0이 되어 "실력 100%인데도 림프/3벳블러프가 나온다"는 문제가 사라진다.
   const quirk = quirkFactor(skill);
   let score = ctx.score;
-  if (rng() < mistakeRate) score += (rng() - 0.5) * 4; // 사람같은 실수: 핸드 강도 인식 오차
+  if (rng() < bigBlunderChance(skill)) score += (rng() - 0.5) * 4; // 사람같은 실수: 핸드 강도 인식 오차(실력 100%면 0)
   score += (rng() - 0.5) * (1 - skill / 100) * 3; // 실력이 낮을수록 항상 섞이는 잔잡음
 
   // raiseLevel===0: 아직 아무도 빅블라인드 이상으로 레이즈하지 않은 "오픈되지 않은" 팟.

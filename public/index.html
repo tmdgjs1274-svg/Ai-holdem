@@ -26,16 +26,11 @@
       <input id="create-name" type="text" placeholder="닉네임" maxlength="12" />
     </label>
 
-    <div class="grid2">
-      <label>AI 인원수 (<span id="ai-count-label">3</span>명)
-        <input id="create-aiCount" type="range" min="0" max="8" value="3" />
-      </label>
-      <label>AI 실수 빈도 (<span id="ai-mistake-label">8</span>%)
-        <input id="create-aiMistake" type="range" min="0" max="30" value="8" />
-      </label>
-    </div>
+    <label>AI 인원수 (<span id="ai-count-label">3</span>명)
+      <input id="create-aiCount" type="range" min="0" max="8" value="3" />
+    </label>
 
-    <label>AI 실력 (<span id="ai-skill-label">75</span>%, 낮을수록 판단이 부정확해짐)
+    <label>AI 실력 (<span id="ai-skill-label">75</span>%, 낮을수록 판단이 부정확해지고 림프·브러프캐치 콜 같은 잡버릇도 늘어남)
       <input id="create-aiSkill" type="range" min="0" max="100" step="5" value="75" />
     </label>
 
@@ -236,10 +231,7 @@
       <input id="set-actionTimeLimit" type="number" min="0" max="99" />
     </label>
     <p class="hint">1 이상으로 설정하면 사람 플레이어에게만 적용되며, 게임 화면에 남은 시간이 표시돼요. AI에는 영향을 주지 않아요.</p>
-    <label>AI 실수 빈도 (<span id="set-aiMistake-label">8</span>%)
-      <input id="set-aiMistake" type="range" min="0" max="30" value="8" />
-    </label>
-    <label>AI 실력 (<span id="set-aiSkill-label">75</span>%, 낮을수록 판단이 부정확해짐)
+    <label>AI 실력 (<span id="set-aiSkill-label">75</span>%, 낮을수록 판단이 부정확해지고 림프·브러프캐치 콜 같은 잡버릇도 늘어남)
       <input id="set-aiSkill" type="range" min="0" max="100" step="5" value="75" />
     </label>
 

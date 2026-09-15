@@ -17,7 +17,7 @@ function autoDriveHumans(table, humanPlayerIds) {
     const seat = st.seats[st.actingSeat];
     if (!seat || seat.type !== 'human') return;
     if (!humanPlayerIds.includes(seat.playerId)) return;
-    const decision = decideAction(st, st.actingSeat, { mistakeRate: 0.08 });
+    const decision = decideAction(st, st.actingSeat, { skillLevel: 75 });
     try {
       table.handleAction(seat.playerId, decision.actionType, decision.amount || 0);
     } catch (e) {
@@ -498,9 +498,9 @@ async function run() {
     });
     table.start();
     const aiCountBefore = table.config.aiCount;
-    table.updateConfig('host1', { aiCount: 6, aiMistakeRate: 0.2 });
+    table.updateConfig('host1', { aiCount: 6, aiSkillLevel: 20 });
     assert.strictEqual(table.config.aiCount, aiCountBefore, '진행 중에는 aiCount가 바뀌면 안 됨');
-    assert.strictEqual(table.config.aiMistakeRate, 0.2, 'aiMistakeRate는 진행 중에도 변경 가능해야 함');
+    assert.strictEqual(table.config.aiSkillLevel, 20, 'aiSkillLevel은 진행 중에도 변경 가능해야 함');
     table._closeRoom('test done');
   });
 

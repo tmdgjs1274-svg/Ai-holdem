@@ -303,17 +303,36 @@ function run() {
     }
   });
 
-  check('콜해야 할 금액이 0(무료 체크 상황, 예: BB 옵션)이어도 폴드는 항상 가능해야 한다', () => {
+  check('콜해야 할 금액이 0(무료 체크 상황, 예: BB 옵션)이면 폴드는 불가능해야 한다(체크로만 가능)', () => {
     const eng = makeEngine(2);
     eng.startHand();
     // 헤즈업 프리플랍: 버튼(SB)이 림프(콜)하면 BB 차례로 넘어오는데, 이때 BB는 더 낼 돈이
-    // 없어(callAmount=0) 체크가 가능한 상황이다. 이 상황에서도 폴드 옵션 자체는 항상 있어야 한다.
+    // 없어(callAmount=0) 체크가 가능한 상황이다. 무료로 체크 가능한 상황에서 폴드까지 보여주면
+    // 실수로 손패를 날리기 쉬우므로, 이 경우 canFold는 false여야 한다.
     const firstLegal = eng.getLegalActions(eng.actingSeat);
     eng.applyAction(eng.actingSeat, firstLegal.canCall ? 'call' : 'check', firstLegal.callAmount || 0);
     const bbLegal = eng.getLegalActions(eng.actingSeat);
     assert.strictEqual(bbLegal.canCheck, true);
     assert.strictEqual(bbLegal.callAmount, 0);
-    assert.strictEqual(bbLegal.canFold, true, 'toCall=0(무료 체크) 상황에서도 canFold는 true여야 한다');
+    assert.strictEqual(bbLegal.canFold, false, 'toCall=0(무료 체크) 상황에서는 canFold가 false여야 한다');
+    assert.throws(() => eng.applyAction(eng.actingSeat, 'fold'), /폴드할 수 없는/);
+  });
+
+  check('실제로 레이즈에 직면했거나(콜 필요) 프리플랍에서 빅블라인드를 콜해야 하는 상황에서는 폴드가 가능해야 한다', () => {
+    const eng = makeEngine(2);
+    eng.startHand();
+    // 헤즈업 프리플랍 첫 액션자(버튼=SB)는 빅블라인드를 콜해야 하는 입장이라 폴드가 가능해야 한다.
+    const firstLegal = eng.getLegalActions(eng.actingSeat);
+    assert.strictEqual(firstLegal.canCall, true);
+    assert.strictEqual(firstLegal.canFold, true);
+
+    // 상대가 레이즈한 뒤 폴드 가능 여부도 확인
+    const eng2 = makeEngine(2);
+    eng2.startHand();
+    eng2.applyAction(eng2.actingSeat, 'raise', eng2.getLegalActions(eng2.actingSeat).minRaiseTo);
+    const facingRaise = eng2.getLegalActions(eng2.actingSeat);
+    assert.strictEqual(facingRaise.canCall, true);
+    assert.strictEqual(facingRaise.canFold, true);
   });
 
   check('computePots: 폴드한 사람의 기여액이 더 적어서 생기는 레이어는 사이드팟이 아니라 하나로 합쳐져야 한다', () => {

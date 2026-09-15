@@ -25,11 +25,11 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
 const LOBBY_EDITABLE = new Set([
   'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'blindLevels',
-  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec',
+  'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec',
   'maxRebuys', 'addOnAmount', 'interHandDelayMs',
 ]);
 const LIVE_EDITABLE = new Set([
-  'aiMistakeRate', 'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
+  'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
   'interHandDelayMs',
 ]);
 
@@ -60,8 +60,9 @@ class TableManager extends EventEmitter {
    *   레벨 추가/삭제/개별 금액·시간 수정은 로비에서만 가능하다(BlindStructure 참고).
    * @param {boolean} [config.bbAnte] BB 앤티(빅블라인드 좌석이 그 레벨 bb만큼 추가로 혼자 냄) 사용 여부, 기본 true.
    *   레벨을 직접 준 경우에는 각 레벨의 ante 값이 우선하며, 이 값은 기본표 생성 시에만 쓰인다.
-   * @param {number} [config.aiMistakeRate] 0~1, 기본 0.08 (드문 큰 실수 빈도)
-   * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (기본 판단 정밀도/실력. 낮을수록 매 판단에 잡음이 커짐)
+   * @param {number} [config.aiSkillLevel] 0~100, 기본 75 (AI 난이도를 결정하는 유일한 축. 낮을수록 매 판단에
+   *   잡음이 커지고, 드문 큰 실수(예전의 aiMistakeRate)도 늘어나며, 림프/브러프캐치 같은 "잡버릇"도 더
+   *   잦아진다. 100이면 이 모든 게 사라져 실수 없이 정밀하게 판단한다)
    * @param {number} [config.interHandDelayMs] 핸드 사이 대기시간, 기본 3500
    * @param {number} [config.aiActionDelayMs] AI 액션 사이 텀, 기본 5000
    * @param {number} [config.actionTimeLimitSec] 사람 전용 베팅 제한시간(초). 0=제한없음(기본값).
@@ -80,7 +81,6 @@ class TableManager extends EventEmitter {
       startingStack: config.startingStack || 20000,
       // 기본 리바인 칩은 이제 시작 칩을 그대로 따라가지 않고 30,000으로 고정된 기본값을 갖는다.
       rebuyAmount: config.rebuyAmount || 30000,
-      aiMistakeRate: config.aiMistakeRate != null ? config.aiMistakeRate : 0.08,
       aiSkillLevel: config.aiSkillLevel != null ? Math.max(0, Math.min(100, config.aiSkillLevel)) : 75,
       interHandDelayMs: config.interHandDelayMs != null ? config.interHandDelayMs : 5000,
       aiActionDelayMs: config.aiActionDelayMs != null ? config.aiActionDelayMs : 1500,
@@ -378,9 +378,6 @@ class TableManager extends EventEmitter {
       this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
       this.config.blindLevels = this.blinds.levels;
     }
-    if ('aiMistakeRate' in applied) {
-      this.config.aiMistakeRate = Math.max(0, Math.min(0.4, Number(applied.aiMistakeRate)));
-    }
     if ('aiSkillLevel' in applied) {
       this.config.aiSkillLevel = Math.max(0, Math.min(100, Number(applied.aiSkillLevel)));
     }
@@ -544,7 +541,6 @@ class TableManager extends EventEmitter {
     }
 
     const decision = decideAction(this.engine, seat.seatIndex, {
-      mistakeRate: this.config.aiMistakeRate,
       skillLevel: this.config.aiSkillLevel,
       opponentModel: this.opponentModel,
     });
