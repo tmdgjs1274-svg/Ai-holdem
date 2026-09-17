@@ -33,4 +33,43 @@ function bigBlunderChance(skill) {
   return ((100 - s) / 100) * 0.15; // skill=0: 15%, skill=50: 7.5%, skill=100: 0%
 }
 
-module.exports = { roundRaiseTo, quirkFactor, bigBlunderChance };
+// 3벳/4벳 블러프, 살짝 못 미치는 손패로 가끔 더 버텨보는 콜처럼 "실수"가 아니라 실제
+// 강한 플레이어도 유지하는 "의도된 밸런스(믹스) 전략" 확률에 곱하는 배율. quirkFactor와
+// 이름은 비슷해 보이지만 용도가 다르다: quirkFactor는 skill=100에서 정확히 0으로
+// 수렴해야 하는 "허술한 실수성" 확률(랜덤 림프 등)에, mixFrequency는 skill=100에서도
+// 0이 되면 안 되는 "전략적으로 의도된" 확률(3벳 블러프, 3벳 콜다운 등)에 쓴다.
+// 실제 프로들도 타이트한 레인지를 유지하면서도 3벳 블러프나 3벳에 대한 콜다운 빈도를
+// 완전히 0으로 만들지 않는다 - 그래야 상대가 AI의 레인지를 쉽게 읽어내지 못한다.
+// skill===75(기존 기본값)에서 1을 반환해 기존 튜닝을 보존하고, skill=100에서는 0.5로만
+// 줄어든다(완전히 사라지지 않음). skill이 낮을수록 quirkFactor와 같은 기울기로 커진다.
+function mixFrequency(skill) {
+  const s = Math.max(0, Math.min(100, skill));
+  return Math.max(0.5, Math.min(3, 1 + (75 - s) * 0.02));
+}
+
+// GTO 폴라라이즈드 벳의 "밸류:블러프 비율" 공식. 베팅 사이즈가 팟의 sizeFrac배일 때, 상대가
+// 콜/폴드 중 어느 쪽을 골라도 무차별(indifferent)하도록 만드는 블러프 비율(벳/레이즈 범위 중
+// 블러프가 차지해야 할 몫)이다. 사이즈가 클수록(오버벳일수록) 이 비율도 커진다 - "크게 베팅할
+// 때는 블러프도 그만큼 더 섞어야 한다"는 솔버의 핵심 성질을 그대로 반영한 것이다.
+function gtoBluffRatio(sizeFrac) {
+  const s = Math.max(0, sizeFrac);
+  return s / (1 + 2 * s);
+}
+
+// 최소방어빈도(MDF, Minimum Defense Frequency). 상대가 팟의 sizeFrac배를 베팅했을 때, 내가
+// 최소 이 비율만큼은 계속(콜/레이즈)해야 상대가 "아무 패로나 베팅해도 무조건 이득"인 상황을
+// 막을 수 있다. sizeFrac이 클수록(오버벳일수록) MDF는 낮아진다 - 오버벳에는 더 자주 폴드해도
+// 된다는(반대로 작은 벳에는 훨씬 넓게 방어해야 한다는) 솔버의 핵심 성질이다.
+function minDefenseFrequency(sizeFrac) {
+  const s = Math.max(0, sizeFrac);
+  return 1 / (1 + s);
+}
+
+module.exports = {
+  roundRaiseTo,
+  quirkFactor,
+  bigBlunderChance,
+  mixFrequency,
+  gtoBluffRatio,
+  minDefenseFrequency,
+};

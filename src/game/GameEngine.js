@@ -148,6 +148,7 @@ class GameEngine extends EventEmitter {
         committedThisStreet: 0,
         hasActedThisStreet: false,
         inHand: playing,
+        anteThisHand: 0,
       };
       if (playing) inHandSeats.push(seat.seatIndex);
     }
@@ -178,7 +179,8 @@ class GameEngine extends EventEmitter {
     // 앤티: "빅블라인드 앤티" 방식만 지원한다 - 전원이 조금씩 내는 대신, 빅블라인드 좌석
     // 한 명이 빅블라인드와 동일한 금액(this.ante)을 혼자 더 내고 팟에 더해진다(버튼이 아님).
     if (this.ante > 0) {
-      this._commit(bbIndex, Math.min(this.ante, this.seats[bbIndex].stack));
+      const anteActual = this._commit(bbIndex, Math.min(this.ante, this.seats[bbIndex].stack));
+      this.hs[bbIndex].anteThisHand = anteActual;
       // 앤티는 스트리트 커밋에 포함하지 않음 (베팅 라운드 콜금액 계산과 무관하도록 리셋)
       for (const seatIdx of inHandSeats) this.hs[seatIdx].committedThisStreet = 0;
     }
@@ -459,12 +461,33 @@ class GameEngine extends EventEmitter {
       this.board.push(...this.shoe.drawN(1));
     }
     const active = this._activePlayers();
+    // 앤티(빅블라인드 혼자 내는 방식)는 "누가 얼마 더 걸었는가"로 겨루는 사이드팟 계산에서
+    // 제외해야 한다 - 그렇지 않으면 다른 사람이 매칭하지 못한 앤티 금액만큼이 별도의
+    // "레이어"로 분리되어, 올인/폴드가 전혀 없었는데도 앤티를 낸 빅블라인드가 그 금액만큼을
+    // 쇼다운 결과와 무관하게 항상 가져가는 유령 사이드팟이 생긴다(버그). 앤티는 승부 결과에
+    // 따라 나눠지는 "죽은 돈"으로 취급해, 폴드하지 않은 전원이 경합하는 메인팟에 합산한다.
+    const anteTotal = Object.keys(this.hs).reduce(
+      (sum, idx) => sum + (this.hs[idx].anteThisHand || 0),
+      0
+    );
     const contributions = Object.keys(this.hs).map((idx) => ({
       playerSeat: Number(idx),
-      amount: this.hs[idx].committedThisHand,
+      amount: this.hs[idx].committedThisHand - (this.hs[idx].anteThisHand || 0),
       folded: this.hs[idx].folded,
     }));
     const pots = computePots(contributions);
+    if (anteTotal > 0) {
+      const activeKey = active.slice().sort((a, b) => a - b).join(',');
+      let mainPot = pots.find(
+        (p) => p.eligibleSeats.slice().sort((a, b) => a - b).join(',') === activeKey
+      );
+      if (!mainPot && pots.length > 0) mainPot = pots[0];
+      if (mainPot) {
+        mainPot.amount += anteTotal;
+      } else {
+        pots.push({ amount: anteTotal, eligibleSeats: active });
+      }
+    }
 
     const bestBySeat = {};
     for (const seatIdx of active) {

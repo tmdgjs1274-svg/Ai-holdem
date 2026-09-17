@@ -362,6 +362,44 @@ function run() {
     assert.strictEqual(pots[1].amount, 800);
   });
 
+  check('BB 앤티: 헤즈업에서 올인/폴드 없이 콜다운만 해도 앤티 때문에 유령 사이드팟이 생기면 안 된다', () => {
+    // 실제 버그 재현 시나리오: 헤즈업, 스택도 넉넉하고 아무도 올인하지 않았는데 BB 혼자 낸
+    // 앤티 금액만큼이 아무도 매칭하지 못해 별도의 "사이드팟"으로 분리되고, 그 팟은 항상
+    // BB가 쇼다운 결과와 무관하게 가져가 버리는 문제가 있었다. 앤티는 죽은 돈으로 메인팟에
+    // 합산되어야 하며, 폴드/올인이 전혀 없는 핸드는 팟이 정확히 1개여야 한다.
+    const eng = new GameEngine({ maxSeats: 2, rng: seedRng(9) });
+    eng.setBlinds(100, 200, 200); // ante = bb와 동일 (기본 BB 앤티 방식)
+    eng.seatPlayer(0, { playerId: 'p0', displayName: 'P0', type: 'human', stack: 50000 });
+    eng.seatPlayer(1, { playerId: 'p1', displayName: 'P1', type: 'human', stack: 50000 });
+    eng.startHand();
+    const bbIdx = eng.bbIndex;
+
+    let guard = 0;
+    while (eng.street !== 'showdown' && guard < 50) {
+      guard++;
+      const s = eng.actingSeat;
+      if (s === -1) break;
+      const legal = eng.getLegalActions(s);
+      if (legal.canCheck) eng.applyAction(s, 'check', 0);
+      else eng.applyAction(s, 'call', legal.callAmount);
+    }
+
+    const result = eng.lastHandResult;
+    assert.strictEqual(result.type, 'showdown');
+    assert.strictEqual(result.pots.length, 1, '올인/폴드 없는 헤즈업 콜다운은 팟이 1개여야 함(앤티로 인한 유령 사이드팟 금지)');
+    assert.strictEqual(result.pots[0].amount, 200 + 200 + 200, 'SB콜(200)+BB(200)+앤티(200) = 600이 하나의 팟에 모두 들어가야 함');
+    // 팟이 승자 한 명(또는 무승부 시 둘)에게 정확히 나뉘고, 앤티만 따로 떼서 BB가 항상
+    // 챙기는 유령 승리가 없어야 한다 - 즉 승자 쪽 winnings 합이 팟 전액과 같아야 한다.
+    const totalWinnings = Object.values(result.winnings).reduce((a, b) => a + b, 0);
+    assert.strictEqual(totalWinnings, result.pots[0].amount);
+    const bbIsSoleWinner = result.winnings[bbIdx] === result.pots[0].amount;
+    const bbWonNothing = !result.winnings[bbIdx];
+    assert.ok(
+      bbIsSoleWinner || bbWonNothing || result.mainWinnerSeats.length === 2,
+      'BB가 실제 쇼다운 승부와 무관하게 앤티 몫(200)만 별도로 챙기면 안 됨'
+    );
+  });
+
   console.log(`GameEngine: ${n}개 테스트 통과`);
 }
 

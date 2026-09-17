@@ -1,9 +1,10 @@
 'use strict';
 
 const { estimateEquity } = require('./Equity');
-const { roundRaiseTo, quirkFactor, bigBlunderChance } = require('./util');
+const { roundRaiseTo, quirkFactor, bigBlunderChance, gtoBluffRatio, minDefenseFrequency } = require('./util');
 const { classifyBoardTexture } = require('./BoardTexture');
 const { buildOpponentRangeFilters } = require('./RangeModel');
+const { evaluateBest } = require('../game/HandEvaluator');
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -47,6 +48,37 @@ function textureBluffAdjust(freq, texture, weight) {
   if (weight <= 0) return freq;
   const mult = 1 + (0.5 - texture.wetness) * 0.8 * weight; // 드라이(wetness↓) -> mult>1
   return Math.max(0.02, freq * mult);
+}
+
+// 정확히 "세컨페어(또는 그 이하)" 원페어 - 보드 최고카드보다 낮은 랭크로 페어를 맞춘
+// 경우 - 만 감쇠 대상으로 삼는다. 탑페어나 오버페어(포켓페어가 보드보다 높은 경우)는 여기
+// 해당하지 않아 그대로 강하게 밸류벳한다 - 실제로도 탑페어/오버페어는 계속 베팅하는 게
+// 정상이고, 사용자가 지적한 건 "세컨페어"에 한정된 문제이기 때문이다. heroPairRank가
+// null이면(원페어가 아니면) 애초에 대상이 아니다.
+function isBelowTopPair(heroCategory, heroPairRank, texture) {
+  return heroCategory === 2 && heroPairRank != null && heroPairRank < texture.highRank;
+}
+
+// 세컨페어(이하) 원페어는 웻(역동적)한 보드일수록 계속 레이즈/벳으로 밀어붙이기보다,
+// 쇼다운밸류를 지키며 체크/콜로 상대의 블러프를 유도하거나 브러프캐치를 하는 편이 일반적인
+// 사람의 플레이에 가깝다(사용자 피드백: "세컨페어에 쇼다운밸류가 없다고 생각하는 것처럼
+// 리레이즈/벳을 막 갈긴다"). 몬테카를로 이퀴티만 보면 세컨페어도 무작위 상대 레인지 대비
+// 종종 0.68을 넘어 "강한 밸류벳" 구간으로 분류되어 버리는데(실제로는 상대의 베팅/레이즈
+// 레인지에는 그보다 강한 손패가 많이 섞여 있다), 그 구간에서도 이 감쇠를 함께 적용한다.
+// 드라이한 보드에서는 크게 줄이지 않는다(드로우가 적어 얇은 밸류벳/프로텍션 벳이 여전히
+// 합리적이기 때문).
+function onePairAggressionDamp(heroCategory, heroPairRank, texture) {
+  if (!isBelowTopPair(heroCategory, heroPairRank, texture)) return 1;
+  return clamp(0.85 - texture.wetness * 0.5, 0.35, 0.85);
+}
+
+// 노페어(하이카드)류 손패는 몬테카를로로 뽑은 원시 이퀴티만으로는, 웻한 보드에서 상대의
+// 벳/레이즈 레인지가 (드로우나 메이드핸드로) 강하게 쏠려 있고 남은 스트리트에서 실제로
+// 실현되는 이퀴티가 원시 추정치보다 낮다는 "리버스 임플라이드 오즈"를 반영하지 못한다.
+// 웻할수록 소폭 할인해, 근거 약한 에이스하이류 콜다운이 과도해지지 않도록 한다.
+function noPairWetBoardDiscount(heroCategory, texture) {
+  if (heroCategory !== 1) return 0;
+  return texture.wetness * 0.1;
 }
 
 // 상대별 누적 성향(OpponentModel)을 바탕으로 블러프/밸류/콜 임계값을 조정한다.
@@ -114,6 +146,24 @@ const NEXT_STREET = { flop: 'turn', turn: 'river' };
  *  4) 멀티스트리트 플랜: 이번 핸드의 이전 스트리트 판단(체크 후 다음 스트리트에 블러프
  *     이어가기, 강한 패를 슬로우플레이했다가 다음 스트리트에 크게 베팅/레이즈하기)을
  *     engine.hs[seatIndex].aiPlan에 저장해 다음 스트리트 판단에 반영한다.
+ *
+ * 이 네 가지와 별개로, skillLevel과 무관하게 항상 적용되는 두 가지 보정이 있다(현재 보드
+ * 기준 실제 메이드핸드 카테고리, heroCategory를 사용):
+ *  - onePairAggressionDamp: 원페어("세컨페어류") 손패는 웻한 보드일수록 레이즈/벳 빈도를
+ *    줄여, 쇼다운밸류를 지키며 체크/콜(브러프캐치)하는 쪽을 선호하게 한다.
+ *  - noPairWetBoardDiscount: 노페어(하이카드) 손패는 웻한 보드에서 이퀴티를 소폭 할인해,
+ *    근거 약한 에이스하이류 콜다운이 과도해지지 않게 한다.
+ *
+ * "실력 100%면 거의 솔버처럼" 요청에 따라, 두 지점에서는 advancedFeatureWeight(=skillLevel/100)
+ * 만큼 상대수/텍스처 기반의 손튜닝된 고정 확률 대신 베팅 사이즈에서 직접 역산한 GTO 공식으로
+ * 옮겨간다(skillLevel=100이면 공식값을 그대로 씀, 0이면 예전 고정 확률을 그대로 씀):
+ *  - 체크로 넘어왔을 때의 순수 블러프 빈도: gtoBluffRatio(베팅사이즈/팟) - "이 사이즈로 벨류:
+ *    블러프를 이 비율로 섞어야 상대가 항상 콜/항상 폴드 어느 쪽으로도 착취할 수 없다"는
+ *    폴라라이즈드 벳의 핵심 공식. 사이즈가 클수록 블러프 비율도 커진다.
+ *  - 상대 베팅에 대응할 때의 브러프캐치 콜 빈도: minDefenseFrequency(상대베팅/팟) - 상대가
+ *    작게 베팅했으면 넓게 방어하고, 오버벳이면 좁게 방어(더 자주 폴드)하는 최소방어빈도(MDF)
+ *    공식. "실력 100%면 브러프캐치를 절대 안 한다"가 아니라 "사이즈에 맞는 만큼만 원칙적으로
+ *    브러프캐치한다"로 바뀐 것이 핵심 차이다.
  */
 function decidePostflop(engine, seatIndex, legal, opts = {}) {
   const rng = opts.rng || Math.random;
@@ -148,12 +198,21 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   if (rng() < bigBlunderChance(skill)) noise += (rng() - 0.5) * 0.3;
   // 실력이 낮을수록 매 판단마다 항상 섞이는 잔잡음(0=아주 부정확, 100=거의 없음)
   noise += (rng() - 0.5) * (1 - skill / 100) * 0.22;
-  const equity = clamp(rawEquity + noise, 0, 1);
+  let equity = clamp(rawEquity + noise, 0, 1);
 
   const pot = engine.potNow();
 
   // 2) 보드 텍스처
   const texture = classifyBoardTexture(engine.board);
+
+  // 현재 보드 기준 실제 메이드핸드 카테고리(1=하이카드, 2=원페어, ...)와, 원페어일 때 그
+  // 페어의 랭크(탑페어/세컨페어 구분에 사용). 세컨페어류 손패의 과도한 공격성 감쇠, 노페어
+  // 손패의 웻보드 할인에 사용한다.
+  const heroBest = evaluateBest([...hs.holeCards, ...engine.board]);
+  const heroCategory = heroBest.category;
+  const heroPairRank = heroCategory === 2 ? heroBest.tiebreakers[0] : null;
+  equity = clamp(equity - noPairWetBoardDiscount(heroCategory, texture), 0, 1);
+  const onePairDamp = onePairAggressionDamp(heroCategory, heroPairRank, texture);
 
   // 3) 상대별 익스플로잇
   const exploit = exploitAdjustments(opts.opponentModel, opponentSeats, exploitWeight);
@@ -175,7 +234,9 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     }
 
     if (equity > 0.68) {
-      const raiseChance = clamp(0.88 * exploit.valueMult, 0.5, 0.97);
+      // 세컨페어(이하)인데도 무작위 레인지 기준 이퀴티가 0.68을 넘어 이 "강한 밸류벳" 구간에
+      // 들어온 경우에도 onePairDamp를 함께 적용한다(그 외 손패는 damp=1이라 영향 없음).
+      const raiseChance = clamp(0.88 * exploit.valueMult * onePairDamp, 0.25, 0.97);
       if (legal.canRaise && rng() < raiseChance) {
         return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.62 + rng() * 0.18, texture, textureWeight) * exploit.valueMult) };
       }
@@ -185,7 +246,7 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
         hs.aiPlan = { type: 'slowplay', dueStreet: NEXT_STREET[engine.street] };
       }
     } else if (equity > 0.45) {
-      if (legal.canRaise && rng() < 0.4) {
+      if (legal.canRaise && rng() < 0.4 * onePairDamp) {
         return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.45 + rng() * 0.15, texture, textureWeight)) };
       }
     } else {
@@ -193,7 +254,14 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
       // 써서 헤즈업 기준 최대 14%, 상대가 적을수록 더 자주 블러프를 걸었는데, 사용자 피드백
       // ("블러프가 너무 많은 것 같다")을 반영해 기준치를 낮췄다(0.28 -> 0.20).
       const baseBluffFreq = Math.max(0.04, 0.2 / (numOpponents + 1));
-      const bluffFreq = textureBluffAdjust(baseBluffFreq, texture, textureWeight) * exploit.bluffMult;
+      // 실력이 높을수록(advancedWeight), 상대수 기반의 고정 휴리스틱 대신 "이번에 쓸 베팅
+      // 사이즈"에서 역산한 GTO 폴라라이즈드 블러프 비율(gtoBluffRatio)로 옮겨간다 - "100%면
+      // 거의 솔버처럼" 요청에 따른 것으로, 실제 폴라라이즈드 벳은 사이즈가 클수록 블러프도
+      // 그만큼 더 많이 섞어야 상대가 항상 콜/항상 폴드 중 하나로 착취할 수 없다.
+      const bluffSizeFrac = textureSizeAdjust(0.65, texture, textureWeight);
+      const gtoFreq = gtoBluffRatio(bluffSizeFrac) / Math.max(1, numOpponents);
+      const blendedBaseFreq = baseBluffFreq + (gtoFreq - baseBluffFreq) * advancedWeight;
+      const bluffFreq = textureBluffAdjust(blendedBaseFreq, texture, textureWeight) * exploit.bluffMult;
       if (legal.canRaise && rng() < bluffFreq) {
         return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)) };
       }
@@ -217,8 +285,10 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
 
   if (equity > requiredEquity + 0.22) {
     // 콜에 필요한 에퀴티보다 여유 있게 앞서는 구간에서의 레이즈(밸류/세미블러프성) 빈도.
-    // 55%는 지나치게 자주 되받아치는 느낌을 줄 수 있어 낮췄다(0.55 -> 0.4).
-    if (legal.canRaise && rng() < 0.4) {
+    // 55%는 지나치게 자주 되받아치는 느낌을 줄 수 있어 낮췄다(0.55 -> 0.4). 원페어 정도의
+    // 손패는 onePairDamp로 한 번 더 줄여, 웻한 보드일수록 레이즈보다 콜(쇼다운밸류 유지/
+    // 브러프캐치)을 선호하게 한다.
+    if (legal.canRaise && rng() < 0.4 * onePairDamp) {
       return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.65 + rng() * 0.2, texture, textureWeight) * exploit.valueMult) };
     }
     return legal.canCall ? { actionType: 'call' } : { actionType: 'check' };
@@ -228,8 +298,20 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   }
 
   const gap = requiredEquity - equity;
-  if (gap < 0.08 && legal.canCall && rng() < 0.3 * quirk) {
-    return { actionType: 'call' }; // 브러프캐치 믹스(실력 100%면 0 - "말도 안 되는 콜" 방지)
+  if (gap < 0.08 && legal.canCall) {
+    // 최소방어빈도(MDF) 기반 브러프캐치 콜. 예전에는 skillLevel과 무관한 고정 30%(quirk로만
+    // 스케일)였는데, "100%면 거의 솔버처럼" 요청에 따라 실력이 높을수록 상대 베팅 사이즈에서
+    // 역산한 MDF로 옮겨간다 - 상대가 작게 베팅했으면 훨씬 넓게 방어하고, 오버벳이면 좁게
+    // 방어하는(더 자주 폴드하는) 솔버의 핵심 성질을 반영한다. MDF 전체가 이 브러프캐치
+    // 구간에서만 채워지는 게 아니라(위 "항상 콜" 구간이 이미 상당 부분을 채움) 보수적으로
+    // 0.6배만 반영한다.
+    const betSizeFrac = legal.callAmount / Math.max(1, pot - legal.callAmount);
+    const gtoBluffcatchProb = clamp(minDefenseFrequency(betSizeFrac) * 0.6, 0.1, 0.85);
+    const oldBluffcatchProb = 0.3 * quirk; // 실력 낮을수록 예전처럼 고정 확률(quirk 배율) 유지
+    const bluffcatchProb = oldBluffcatchProb + (gtoBluffcatchProb - oldBluffcatchProb) * advancedWeight;
+    if (rng() < bluffcatchProb) {
+      return { actionType: 'call' };
+    }
   }
   if (equity > 0.3 && equity < 0.5 && legal.canRaise && rng() < 0.08 * quirk) {
     return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6) }; // 세미블러프(실력 100%면 0)
@@ -245,4 +327,6 @@ module.exports = {
   textureSizeAdjust,
   textureBluffAdjust,
   exploitAdjustments,
+  onePairAggressionDamp,
+  noPairWetBoardDiscount,
 };

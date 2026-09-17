@@ -7,10 +7,12 @@ const {
   textureSizeAdjust,
   textureBluffAdjust,
   exploitAdjustments,
+  onePairAggressionDamp,
+  noPairWetBoardDiscount,
 } = require('../src/ai/PostflopHeuristic');
 const { classifyBoardTexture } = require('../src/ai/BoardTexture');
 const { cardFromString } = require('../src/game/Deck');
-const { quirkFactor, bigBlunderChance } = require('../src/ai/util');
+const { quirkFactor, bigBlunderChance, mixFrequency, gtoBluffRatio, minDefenseFrequency } = require('../src/ai/util');
 
 function seedRng(seed) {
   // gameEngine.test.js와 동일한 결정적 PRNG (mulberry32)
@@ -89,6 +91,49 @@ function run() {
     assert.ok(bigBlunderChance(0) > bigBlunderChance(50));
     assert.ok(bigBlunderChance(50) > bigBlunderChance(100));
     assert.strictEqual(bigBlunderChance(150), 0, '범위를 벗어난 입력도 안전하게 clamp됨');
+  });
+
+  check('mixFrequency: 3벳/4벳 블러프 같은 밸런스 전략 확률은 skillLevel=100에서도 0이 되지 않고 절반만 남는다', () => {
+    assert.strictEqual(mixFrequency(75), 1, '기존 기본값(75)에서는 1로 기존 튜닝 보존');
+    assert.strictEqual(mixFrequency(100), 0.5, 'skill=100에서도 완전히 0이 되지 않고 0.5는 남음');
+    assert.ok(mixFrequency(0) > mixFrequency(75), '실력이 낮을수록 배율이 커짐(quirkFactor와 같은 방향)');
+    assert.strictEqual(mixFrequency(150), 0.5, '범위를 벗어난 입력도 안전하게 clamp됨(하한 0.5는 유지)');
+    assert.strictEqual(mixFrequency(-50), 2.5, '범위를 벗어난 입력도 안전하게 clamp됨(skill<0은 0으로 취급)');
+  });
+
+  check('gtoBluffRatio: 베팅 사이즈가 클수록(팟 대비 비율↑) 블러프 비율도 커진다(폴라라이즈드 벳)', () => {
+    assert.ok(Math.abs(gtoBluffRatio(0) - 0) < 1e-9, '사이즈 0이면 블러프 비율도 0');
+    assert.ok(Math.abs(gtoBluffRatio(1) - 1 / 3) < 1e-9, '팟사이즈 벳(1배)이면 블러프 비율 1/3');
+    assert.ok(Math.abs(gtoBluffRatio(0.5) - 0.25) < 1e-9, '하프팟 벳이면 블러프 비율 1/4');
+    assert.ok(gtoBluffRatio(2) > gtoBluffRatio(1), '오버벳일수록 블러프 비율이 더 커짐');
+    assert.strictEqual(gtoBluffRatio(-5), 0, '음수 입력은 0으로 취급');
+  });
+
+  check('minDefenseFrequency: 베팅 사이즈가 클수록(오버벳일수록) 최소방어빈도(MDF)는 낮아진다', () => {
+    assert.strictEqual(minDefenseFrequency(0), 1, '사이즈 0이면 MDF는 1(전부 방어)');
+    assert.ok(Math.abs(minDefenseFrequency(1) - 0.5) < 1e-9, '팟사이즈 벳(1배)이면 MDF 50%');
+    assert.ok(minDefenseFrequency(2) < minDefenseFrequency(1), '오버벳일수록 MDF가 더 낮아짐(덜 방어해도 됨)');
+    assert.strictEqual(minDefenseFrequency(-3), 1, '음수 입력은 0으로 취급되어 MDF=1');
+  });
+
+  check('onePairAggressionDamp: 정확히 "세컨페어(보드 최고카드보다 낮은 원페어)"만 감쇠하고, 웻한 보드일수록 더 줄인다', () => {
+    const dryTexture = classifyBoardTexture(cards(['2c', '7d', 'Kh'])); // highRank=13(K)
+    const wetTexture = classifyBoardTexture(cards(['7s', '8s', '9s'])); // highRank=9
+    assert.strictEqual(onePairAggressionDamp(1, null, wetTexture), 1, '하이카드(노페어)는 이 감쇠의 대상이 아님');
+    assert.strictEqual(onePairAggressionDamp(3, null, wetTexture), 1, '투페어 이상은 이 감쇠의 대상이 아님(이미 밸류벳 구간)');
+    // 보드 최고카드(9)와 정확히 같은 랭크로 페어 -> 탑페어이므로 감쇠하지 않음
+    assert.strictEqual(onePairAggressionDamp(2, 9, wetTexture), 1, '탑페어는 세컨페어가 아니므로 감쇠하지 않음');
+    // 보드 최고카드(9)보다 낮은 랭크로 페어 -> 진짜 세컨페어이므로 감쇠함
+    assert.ok(onePairAggressionDamp(2, 8, wetTexture) < 1, '세컨페어는 감쇠됨');
+    assert.ok(onePairAggressionDamp(2, 8, wetTexture) < onePairAggressionDamp(2, 8, dryTexture), '세컨페어는 웻한 보드일수록 더 많이 감쇠됨');
+    assert.ok(onePairAggressionDamp(2, 8, wetTexture) >= 0.35 && onePairAggressionDamp(2, 8, dryTexture) <= 0.85, '0.35~0.85 범위 안에서 감쇠');
+  });
+
+  check('noPairWetBoardDiscount: 노페어(하이카드)만 할인하고, 웻한 보드일수록 할인폭이 크다', () => {
+    const dryTexture = classifyBoardTexture(cards(['2c', '7d', 'Kh']));
+    const wetTexture = classifyBoardTexture(cards(['7s', '8s', '9s']));
+    assert.strictEqual(noPairWetBoardDiscount(2, wetTexture), 0, '원페어 이상은 이 할인의 대상이 아님');
+    assert.ok(noPairWetBoardDiscount(1, wetTexture) > noPairWetBoardDiscount(1, dryTexture), '노페어는 웻한 보드일수록 할인폭이 큼(에이스하이 콜다운 억제)');
   });
 
   check('textureSizeAdjust: weight=0이면 조정 없이 원래 fraction 그대로', () => {
