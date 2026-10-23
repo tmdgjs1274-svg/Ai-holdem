@@ -110,6 +110,69 @@ async function run() {
     assert.strictEqual(withSituation, checked, '모든 액션에 상황 요약(situation)이 있어야 함');
   });
 
+  await check('상대 분석(reads): 포스트플랍 모든 액션에 상대 정보가 있고, 실력 100%면 예상 레인지를 쓰며, 전문용어 없이 쉬운 말', async () => {
+    const table = makeTable({ aiSkillLevel: 100 });
+    const views = await collect(table, 40, 25000);
+    const JARGON = /이퀴티|팟오즈|MDF|GTO|폴라라이즈|레인지|익스플로잇|밸류벳|블러프캐치|브러프캐치|3벳|4벳|오픈 기준|셔브|감쇠|점수 \d|×\d/;
+    let post = 0; let withReads = 0; let withRange = 0; let withTendency = 0; let withEffect = 0; let pre = 0; let preReads = 0;
+    const textOf = (a) => [a.readsRange, a.readsEffect, a.reads && a.reads.headline, ...(a.reads ? a.reads.notes : []),
+      ...(a.reads ? a.reads.opponents.flatMap((o) => o.items) : [])].filter(Boolean).join(' ');
+    for (const v of views) {
+      for (const p of v.review.players) {
+        for (const a of p.actions) {
+          assert.ok(!JARGON.test(textOf(a)), `상대 분석에 전문용어가 섞임: ${textOf(a)}`);
+          if (a.street === 'preflop') { pre++; if (a.reads && a.reads.headline && a.reads.notes.length) preReads++; continue; }
+          post++;
+          if (a.reads && a.reads.opponents.length >= 1 && a.reads.opponents.every((o) => o.items.length >= 2)) withReads++;
+          if (a.readsRange) withRange++;
+          if (a.reads && a.reads.opponents.some((o) => o.items.some((t) => t.startsWith('평소 성향')))) withTendency++;
+          if (a.readsEffect) withEffect++;
+        }
+      }
+    }
+    assert.ok(post > 20, '포스트플랍 액션이 충분히 있어야 함');
+    assert.strictEqual(withReads, post, '모든 포스트플랍 액션에 상대 분석 블록이 있어야 함');
+    assert.ok(withRange > post * 0.5, `실력 100%면 대부분의 액션에서 상대 예상 레인지를 써야 함(${withRange}/${post})`);
+    assert.strictEqual(withTendency, post, '실력 100%면 평소 성향 항목이 모든 액션에 있어야 함');
+    assert.strictEqual(preReads, pre, '프리플랍 액션에도 앞선 상황/참고한 기준 설명이 있어야 함');
+    assert.ok(withEffect >= 0);
+  });
+
+  await check('상대 분석(reads): 실력 0%면 상대 레인지를 쓰지 않고(무작위 가정) 성향도 참고하지 않는다고 솔직하게 표시', async () => {
+    const table = makeTable({ aiSkillLevel: 0 });
+    const views = await collect(table, 30, 25000);
+    let post = 0;
+    for (const v of views) {
+      for (const p of v.review.players) {
+        for (const a of p.actions) {
+          if (a.street === 'preflop') continue;
+          post++;
+          assert.strictEqual(a.readsRange, null, '실력 0%에서는 레인지 가정 문장이 없어야 함');
+          assert.strictEqual(a.readsEffect, null, '실력 0%에서는 성향 보정 문장이 없어야 함');
+          for (const o of a.reads.opponents) {
+            assert.ok(o.items[0].includes('아무 패나'), '무작위 가정임을 표시해야 함');
+            assert.ok(o.items.some((t) => t.includes('참고하지 않아요')), '성향을 참고하지 않음을 표시해야 함');
+          }
+        }
+      }
+    }
+    assert.ok(post > 10);
+  });
+
+  await check('상대 분석 도우미: 성향 문장은 표본 부족 시 "아직 데이터 부족"으로 정직하게, 충분하면 수치로 설명', () => {
+    const { describeTendency, rangeTagText, describeHandActions, josaIga, josaEun } = require('../src/ai/Explain');
+    assert.ok(/데이터가 (부족|없)/.test(describeTendency({ hands: 2, facedBet: 1, foldedToBet: 0, foldRate: null, aggression: null, vpip: null })));
+    const t = describeTendency({ hands: 20, facedBet: 10, foldedToBet: 7, foldRate: 0.7, aggression: 0.7, vpip: 0.5 });
+    assert.ok(t.includes('70%') && t.includes('잘 접는 편') && t.includes('공격적'));
+    assert.ok(rangeTagText('reraiser').short.includes('강한'));
+    assert.strictEqual(rangeTagText('없는태그'), null);
+    assert.strictEqual(describeHandActions([{ seatIndex: 1, street: 'flop', actionType: 'bet', amount: 600 }, { seatIndex: 2, street: 'flop', actionType: 'call', amount: 600 }], 1), '플랍 베팅 600');
+    assert.strictEqual(josaIga('승헌'), '이');
+    assert.strictEqual(josaIga('봇 알파'), '가');
+    assert.strictEqual(josaEun('승헌'), '은');
+    assert.strictEqual(josaEun('봇 찰리'), '는');
+  });
+
   await check('호스트는 전원(폴드한 AI 홀카드 포함), 게스트는 쇼다운 도달 AI만 - 폴드 AI 카드 유출 없음', async () => {
     const table = makeTable();
     const views = await collect(table, 40, 25000);

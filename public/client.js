@@ -1249,6 +1249,7 @@ function renderAiReview(review) {
       card.appendChild(none);
     }
     let lastStreet = null;
+    let prevRangeText = null;
     p.actions.forEach((a) => {
       if (a.street !== lastStreet) {
         lastStreet = a.street;
@@ -1274,6 +1275,51 @@ function renderAiReview(review) {
       why.className = 'ai-rv-why';
       why.textContent = a.reason;
       whyBox.appendChild(why);
+      // 상대 분석: AI가 상대 패를 어떻게 가정했는지(같은 가정이 이어지면 반복하지 않음) + 이번 판단에 쓰인 상대 성향 보정
+      const prevRange = prevRangeText;
+      prevRangeText = a.readsRange || null;
+      if ((a.readsRange && a.readsRange !== prevRange) || a.readsEffect) {
+        const rd = document.createElement('div');
+        rd.className = 'ai-rv-read';
+        const tag = document.createElement('b');
+        tag.textContent = '상대 분석 ';
+        rd.appendChild(tag);
+        rd.appendChild(document.createTextNode([a.readsRange !== prevRange ? a.readsRange : null, a.readsEffect].filter(Boolean).join(' ')));
+        whyBox.appendChild(rd);
+      }
+      if (a.reads) {
+        const dt = document.createElement('details');
+        dt.className = 'ai-rv-reads';
+        const sm = document.createElement('summary');
+        sm.textContent = '상대 분석 자세히 보기';
+        dt.appendChild(sm);
+        if (a.reads.headline) {
+          const hl = document.createElement('div');
+          hl.className = 'ai-rv-reads-head';
+          hl.textContent = a.reads.headline;
+          dt.appendChild(hl);
+        }
+        (a.reads.opponents || []).forEach((o) => {
+          const ob = document.createElement('div');
+          ob.className = 'ai-rv-reads-opp';
+          const nm = document.createElement('b');
+          nm.textContent = o.name;
+          ob.appendChild(nm);
+          (o.items || []).forEach((it) => {
+            const li = document.createElement('div');
+            li.textContent = it;
+            ob.appendChild(li);
+          });
+          dt.appendChild(ob);
+        });
+        (a.reads.notes || []).forEach((n) => {
+          const nt = document.createElement('div');
+          nt.className = 'ai-rv-reads-note';
+          nt.textContent = n;
+          dt.appendChild(nt);
+        });
+        whyBox.appendChild(dt);
+      }
       if (a.situation) {
         const sit = document.createElement('div');
         sit.className = 'ai-rv-sit';

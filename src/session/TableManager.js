@@ -660,6 +660,9 @@ class TableManager extends EventEmitter {
       reason: decision.reason || '(이유 정보 없음)',
       situation: decision.situation || null,
       detail: decision.detail || null,
+      reads: decision.reads || null,
+      readsRange: decision.readsRange || null,
+      readsEffect: decision.readsEffect || null,
       equity: decision.meta && decision.meta.equity != null ? Math.round(decision.meta.equity * 1000) / 1000 : null,
     };
   }

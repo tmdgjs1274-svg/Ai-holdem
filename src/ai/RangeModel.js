@@ -57,16 +57,23 @@ function rangeBoundsForTag(engine, seatIndex, tag) {
  * @returns {Array<null|function(card,card):boolean>|null} opponentSeatIndexes와 같은 길이의
  *   필터 배열, 또는 적용할 필터가 하나도 없으면 null(=estimateEquity가 기존 방식대로 동작)
  */
-function buildOpponentRangeFilters(engine, opponentSeatIndexes, rangeWeight, rng) {
-  if (!rangeWeight || rangeWeight <= 0) return null;
+function buildOpponentRangeFilters(engine, opponentSeatIndexes, rangeWeight, rng, trace = null) {
+  // trace(선택): AI 액션 리뷰용. 상대별로 "실제로 레인지를 좁혀서 계산했는지/어떤 태그였는지"를 기록한다.
+  // 판단 로직에는 영향이 없고(난수 소비 순서도 그대로), 기록만 덧붙인다.
+  const note = (seatIdx, applied, tag) => { if (trace) trace.push({ seatIndex: seatIdx, applied, tag: tag || null }); };
+  if (!rangeWeight || rangeWeight <= 0) {
+    opponentSeatIndexes.forEach((i) => note(i, false, null));
+    return null;
+  }
   let anyFilter = false;
   const filters = opponentSeatIndexes.map((seatIdx) => {
-    if (rng() > rangeWeight) return null; // 실력이 낮을수록 이 상대는 그냥 무작위로 취급
+    if (rng() > rangeWeight) { note(seatIdx, false, null); return null; } // 실력이 낮을수록 이 상대는 그냥 무작위로 취급
     const tag = summarizePreflopAction(engine, seatIdx);
-    if (!tag) return null;
+    if (!tag) { note(seatIdx, false, null); return null; }
     const bounds = rangeBoundsForTag(engine, seatIdx, tag);
-    if (!bounds) return null;
+    if (!bounds) { note(seatIdx, false, tag); return null; }
     anyFilter = true;
+    note(seatIdx, true, tag);
     return (c1, c2) => {
       const s = chenScore(c1, c2);
       if (s < bounds.min) return false;

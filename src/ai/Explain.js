@@ -40,8 +40,73 @@ function boardPlain(wetness) {
   return '안정적인 보드(역전당할 위험이 적음)';
 }
 
+// 이름 뒤에 붙는 주격 조사(이/가). 받침이 있으면 '이', 없으면 '가'.
+function josaIga(name) {
+  const ch = String(name || '').trim().slice(-1);
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 === 0 ? '가' : '이';
+  return '가';
+}
+
+// 이름 뒤에 붙는 보조사(은/는). 받침이 있으면 '은', 없으면 '는'.
+function josaEun(name) {
+  const ch = String(name || '').trim().slice(-1);
+  const code = ch.charCodeAt(0);
+  if (code >= 0xac00 && code <= 0xd7a3) return (code - 0xac00) % 28 === 0 ? '는' : '은';
+  return '는';
+}
+
 function fmtChips(n) {
   return Math.round(n).toLocaleString('ko-KR');
 }
 
-module.exports = { handStrengthLabel, positionKo, handNamePlain, boardPlain, fmtChips };
+// ---- 상대 분석(AI가 실제로 참고한 상대 정보)을 쉬운 말로 ----
+
+// RangeModel의 태그 -> "그 상대가 쥐고 있을 법한 패"를 한 줄로
+const RANGE_TAG_TEXT = {
+  reraiser: { short: '아주 강한 패', full: '프리플랍에서 여러 번 올렸으니 아주 강한 패일 가능성이 높다고 봤어요' },
+  raiser: { short: '꽤 괜찮은 패', full: '프리플랍에서 판돈을 올렸으니 꽤 괜찮은 패일 거라고 봤어요' },
+  caller: { short: '중간 정도의 패', full: '프리플랍에서 올리지 않고 따라만 갔으니 아주 강하진 않은 중간 정도 패일 거라고 봤어요' },
+  checked_through: { short: '약한 패까지 섞인 넓은 범위', full: '프리플랍에서 공짜로 넘어갔으니 약한 패까지 섞인 넓은 범위로 봤어요' },
+};
+function rangeTagText(tag) {
+  return RANGE_TAG_TEXT[tag] || null;
+}
+
+// OpponentModel.summary -> 평소 성향 설명(표본이 부족하면 "아직 모름"으로 솔직하게)
+function describeTendency(sum) {
+  if (!sum) return '아직 이 상대의 성향을 판단할 만한 데이터가 없어요';
+  const parts = [];
+  if (sum.foldRate != null) {
+    const pct = Math.round(sum.foldRate * 100);
+    const kind = sum.foldRate >= 0.6 ? '잘 접는 편' : sum.foldRate <= 0.35 ? '잘 안 접는 편' : '보통';
+    parts.push(`베팅을 받으면 ${pct}%를 접었어요(${sum.facedBet}번 중 ${sum.foldedToBet}번, ${kind})`);
+  }
+  if (sum.aggression != null) {
+    const pct = Math.round(sum.aggression * 100);
+    const kind = sum.aggression >= 0.6 ? '공격적인 편' : sum.aggression <= 0.35 ? '콜이 많은 수동적인 편' : '보통';
+    parts.push(`액션 중 베팅·레이즈가 ${pct}%(${kind})`);
+  }
+  if (!parts.length) return `아직 이 상대의 성향을 판단할 만한 데이터가 부족해요(${sum.hands}핸드 관찰)`;
+  return parts.join(', ');
+}
+
+const STREET_SHORT = { preflop: '프리플랍', flop: '플랍', turn: '턴', river: '리버' };
+// 이번 핸드에서 그 상대가 한 행동을 순서대로 한 줄로(공개된 정보만)
+function describeHandActions(actionLog, seatIndex) {
+  const acts = (actionLog || []).filter((a) => a.seatIndex === seatIndex);
+  if (!acts.length) return null;
+  const ko = { fold: '폴드', check: '체크', call: '콜', raise: '레이즈', bet: '베팅', allin: '올인' };
+  return acts
+    .map((a) => {
+      const base = ko[a.actionType] || a.actionType;
+      const amt = (a.actionType === 'raise' || a.actionType === 'bet' || a.actionType === 'allin') && a.amount ? ` ${fmtChips(a.amount)}` : '';
+      return `${STREET_SHORT[a.street] || a.street} ${base}${amt}`;
+    })
+    .join(' → ');
+}
+
+module.exports = {
+  handStrengthLabel, positionKo, handNamePlain, boardPlain, fmtChips,
+  rangeTagText, describeTendency, describeHandActions, josaIga, josaEun,
+};

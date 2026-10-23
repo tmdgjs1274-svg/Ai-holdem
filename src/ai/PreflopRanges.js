@@ -3,7 +3,7 @@
 const { chenScore } = require('./Equity');
 const { roundRaiseTo, quirkFactor, bigBlunderChance, mixFrequency } = require('./util');
 const { getPositionCategory } = require('../game/Position');
-const { handStrengthLabel, positionKo } = require('./Explain');
+const { handStrengthLabel, positionKo, describeHandActions, josaIga, fmtChips } = require('./Explain');
 
 // 9-max 기준 포지션별 오픈레이즈 최소 점수 (풀링 기준선)
 const BASE_OPEN_THRESHOLD = {
@@ -114,9 +114,47 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const label = handStrengthLabel(score);
   const adj = label.replace(/ 패$/, ''); // '약한', '애매한' 처럼 '패' 없이 꾸며주는 말
   const posKo = positionKo(POS);
-  const facing = ctx.raiseLevel >= 2 ? '상대가 이미 여러 번 판돈을 올린 상황' : '상대가 판돈을 올린 상황';
-  const situation = `${label} · ${posKo} · ${ctx.numActive}명 참여`;
-  const mk = (plain, detail) => ({ reason: plain, situation, detail });
+  // 아래 설명 조각(누가 얼마까지 올렸는지 등)은 리뷰용일 뿐이므로, 만들다 실패해도 AI의 판단에는
+  // 영향이 없도록 try/catch로 감싸고, 실패하면 단순한 문구로 대체한다.
+  const explainPre = () => {
+    try {
+      // 누가 얼마까지 올렸는지(공개된 정보)를 설명에 반영한다. 프리플랍 판단은 실제로 "앞선 레이즈 크기"를
+      // 기준으로 하므로(estimateRaiseLevel), 그 크기를 빅블라인드 배수로 보여준다.
+      const raiserSeat = engine.lastAggressorSeat;
+      const raiserName =
+        raiserSeat != null && raiserSeat >= 0 && raiserSeat !== seatIndex && engine.seats[raiserSeat]
+          ? engine.seats[raiserSeat].displayName
+          : null;
+      const raiseBb = engine.bigBlind ? Math.round((engine.currentBet / engine.bigBlind) * 10) / 10 : 0;
+      const raiseWho = raiserName ? `${raiserName}${josaIga(raiserName)}` : '상대가';
+      const facing = ctx.raiseLevel >= 2
+        ? `${raiseWho} 판돈을 빅블라인드의 ${raiseBb}배까지 계속 올린 상황`
+        : `${raiseWho} 판돈을 빅블라인드의 ${raiseBb}배까지 올린 상황`;
+      const situation = `${label} · ${posKo} · ${ctx.numActive}명 참여`;
+      const preflopReads = {
+        headline: ctx.raiseLevel > 0
+          ? `앞서 ${raiseWho} 판돈을 올렸어요(빅블라인드의 ${raiseBb}배, ${fmtChips(engine.currentBet)}). 많이 올릴수록 상대 패가 강하다고 보고 더 신중하게 판단해요.`
+          : '아직 아무도 판돈을 올리지 않았어요(열려 있는 판).',
+        opponents: ctx.order
+          .filter((i) => i !== seatIndex && engine.hs[i] && !engine.hs[i].folded)
+          .map((i) => {
+            const acts = describeHandActions(engine.actionLog, i);
+            return { seatIndex: i, name: engine.seats[i].displayName, items: [acts ? `이번 핸드 행동: ${acts}` : '이번 핸드 행동: 아직 없음(블라인드만 낸 상태)'], tag: null };
+          }),
+        effects: [],
+        notes: ['프리플랍은 내 패의 등급, 내 자리(포지션), 남은 인원, 내 칩 양, 앞서 올린 크기를 기준으로 판단해요. 상대 개인의 평소 성향과 예상 패 분석은 플랍부터 반영해요.'],
+      };
+      return { facing, situation, preflopReads };
+    } catch (err) {
+      return {
+        facing: ctx.raiseLevel >= 2 ? '상대가 계속 판돈을 올린 상황' : '상대가 판돈을 올린 상황',
+        situation: `${label} · ${posKo}`,
+        preflopReads: null,
+      };
+    }
+  };
+  const { facing, situation, preflopReads } = explainPre();
+  const mk = (plain, detail) => ({ reason: plain, situation, detail, reads: preflopReads });
 
   if (ctx.effectiveStackBb <= 15) {
     let shoveThresh = pushFoldThreshold(ctx.position, ctx.effectiveStackBb);
@@ -141,7 +179,7 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
     // 오픈 여부 결정: 레이즈-오어-폴드 원칙 (림프는 최소화, 가끔 사람처럼 림프)
     if (score >= openThresh) {
       if (legal.canRaise) {
-        return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), ...mk(score >= 9 ? `${label}라서 판돈을 올려 판을 먼저 시작했어요.` : `패는 ${adj} 편이지만 ${posKo}는 유리한 자리라서, 먼저 판돈을 올려 판을 시작해 볼 만하다고 봤어요.`, `${POS} 오픈 레이즈: 점수 ${sc} ≥ 오픈 기준 ${openThresh.toFixed(1)}(${ctx.numActive}인 테이블 보정 반영)`) };
+        return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), ...mk(score >= 9 ? `${label}라서 판돈을 올려 판을 먼저 시작했어요.` : `패는 ${adj} 편이지만 ${posKo}에서는 이 정도 패로도 먼저 판돈을 올려 판을 시작해 볼 만하다고 봤어요.`, `${POS} 오픈 레이즈: 점수 ${sc} ≥ 오픈 기준 ${openThresh.toFixed(1)}(${ctx.numActive}인 테이블 보정 반영)`) };
       }
       if (legal.canCheck) return { actionType: 'check', ...mk(`올려 볼 만한 패지만 올릴 수 없는 상황이라 체크했어요.`, `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 체크`) };
       return { actionType: 'call', ...mk(`올려 볼 만한 패지만 올릴 수 없는 상황이라 따라갔어요.`, `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 콜`) };

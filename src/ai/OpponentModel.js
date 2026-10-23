@@ -59,6 +59,23 @@ class OpponentModel {
     else if (actionType === 'call') s.calledOnly += 1;
   }
 
+  /**
+   * AI 액션 리뷰용 요약. 판단에 쓰는 값(foldToBetRate/aggressionRate)과 동일한 기준으로,
+   * 표본이 충분한 지표만 값을 채우고 부족하면 null로 둔다(그 경우 AI도 이 지표를 쓰지 않는다).
+   */
+  summary(seatIndex) {
+    const s = this.bySeat[seatIndex];
+    if (!s) return { hands: 0, facedBet: 0, foldedToBet: 0, foldRate: null, aggression: null, vpip: null };
+    return {
+      hands: s.hands,
+      facedBet: s.facedBet,
+      foldedToBet: s.foldedToBet,
+      foldRate: this.foldToBetRate(seatIndex),
+      aggression: this.aggressionRate(seatIndex),
+      vpip: this.vpipRate(seatIndex),
+    };
+  }
+
   /** 0~1. 표본(핸드 수)이 부족하면 null. */
   vpipRate(seatIndex) {
     const s = this.bySeat[seatIndex];

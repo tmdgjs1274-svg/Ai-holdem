@@ -417,3 +417,12 @@ input.raise-amount-input {
 .ai-rv-sit { font-size: 11px; color: #9fd8ba; }
 .ai-rv-detail { display: none; font-size: 11px; color: #b9c9c0; background: rgba(0,0,0,0.25); border-radius: 4px; padding: 3px 6px; margin-top: 2px; }
 .ai-review-body.show-detail .ai-rv-detail { display: block; }
+
+.ai-rv-read { font-size: 12px; line-height: 1.5; color: #f1dd9a; background: rgba(226,185,59,0.10); border-left: 2px solid #e2b93b; padding: 3px 7px; border-radius: 0 4px 4px 0; margin-top: 2px; }
+.ai-rv-read b { color: #e2b93b; }
+.ai-rv-reads { margin-top: 2px; font-size: 11px; }
+.ai-rv-reads > summary { cursor: pointer; color: #9fd8ba; }
+.ai-rv-reads-head { margin: 4px 0; color: #dfeee6; line-height: 1.45; }
+.ai-rv-reads-opp { margin: 4px 0; padding: 4px 6px; background: rgba(0,0,0,0.22); border-radius: 4px; line-height: 1.45; color: #cfe0d6; }
+.ai-rv-reads-opp b { color: #e2b93b; display: block; }
+.ai-rv-reads-note { margin-top: 4px; color: #9fb7aa; }
