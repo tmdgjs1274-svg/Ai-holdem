@@ -386,3 +386,22 @@ input.raise-amount-input {
   .playing-card { width: 28px; height: 40px; font-size: 13px; }
   .center-panel { padding: 8px 14px; }
 }
+
+/* AI 액션 리뷰 (결과 모달 안 접이식) */
+.ai-review { margin-top: 12px; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 6px 10px; background: rgba(0,0,0,0.18); }
+.ai-review > summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
+.ai-review-body { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 6px 0 4px; }
+.ai-rv-player { border-left: 3px solid #e2b93b; padding-left: 8px; }
+.ai-rv-player.folded { border-left-color: #7a8a82; opacity: 0.92; }
+.ai-rv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-rv-name { font-weight: 700; }
+.ai-rv-head .r-cards { display: flex; gap: 3px; }
+.ai-rv-head .r-cards .playing-card { width: 26px; height: 36px; font-size: 12px; }
+.ai-rv-street { margin-top: 6px; font-size: 11px; color: #9fd8ba; letter-spacing: 0.02em; }
+.ai-rv-action { display: flex; gap: 8px; align-items: flex-start; margin-top: 3px; font-size: 12px; line-height: 1.4; }
+.ai-rv-act { flex: none; min-width: 64px; font-weight: 700; text-align: center; border-radius: 4px; padding: 1px 6px; background: rgba(255,255,255,0.12); }
+.ai-rv-act.raise, .ai-rv-act.allin { background: rgba(226,120,59,0.35); }
+.ai-rv-act.call { background: rgba(59,160,226,0.3); }
+.ai-rv-act.fold { background: rgba(160,160,160,0.3); }
+.ai-rv-why { color: #dfeee6; word-break: keep-all; overflow-wrap: anywhere; }
+.ai-rv-none { font-size: 12px; color: #9fd8ba; margin-top: 4px; }

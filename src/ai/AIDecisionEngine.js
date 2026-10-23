@@ -6,6 +6,8 @@ const { decidePostflop } = require('./PostflopHeuristic');
 // 결정된 액션이 실제로 합법적인지 최종 방어. 불법이면 합리적인 액션으로 강등.
 function sanitize(legal, decision) {
   let { actionType, amount } = decision;
+  const { reason, meta } = decision;
+  const original = actionType;
 
   if (actionType === 'raise' && !legal.canRaise) {
     actionType = legal.canCall ? 'call' : legal.canCheck ? 'check' : 'fold';
@@ -23,7 +25,14 @@ function sanitize(legal, decision) {
   if (actionType === 'raise' && (amount == null || Number.isNaN(amount))) {
     amount = legal.minRaiseTo;
   }
-  return { actionType, amount };
+  let outReason = reason;
+  if (outReason && original !== actionType) {
+    outReason += ` (※ ${original}은(는) 불가능해 ${actionType}(으)로 보정됨)`;
+  }
+  const out = { actionType, amount };
+  if (outReason) out.reason = outReason;
+  if (meta) out.meta = meta;
+  return out;
 }
 
 /**
@@ -31,7 +40,7 @@ function sanitize(legal, decision) {
  * @param {import('../game/GameEngine').GameEngine} engine
  * @param {number} seatIndex
  * @param {object} [opts] { skillLevel, rng, opponentModel } (예전의 mistakeRate는 skillLevel에 통합됨)
- * @returns {{ actionType: string, amount?: number }}
+ * @returns {{ actionType: string, amount?: number, reason?: string, meta?: object }}
  */
 function decideAction(engine, seatIndex, opts = {}) {
   const legal = engine.getLegalActions(seatIndex);
@@ -45,4 +54,4 @@ function decideAction(engine, seatIndex, opts = {}) {
   return sanitize(legal, decision);
 }
 
-module.exports = { decideAction };
+module.exports = { decideAction, sanitize };

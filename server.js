@@ -62,7 +62,17 @@ function attachTableEvents(table) {
     broadcastLobby(table);
     broadcastState(table);
   });
-  table.on('handResult', (result) => io.to(table.roomId).emit('handResult', result));
+  // 핸드 결과는 소켓마다 권한에 맞게 걸러서 보낸다(AI 액션 리뷰는 호스트만 전원 공개,
+  // 게스트는 쇼다운까지 간 AI만). 방 전체 브로드캐스트를 쓰면 폴드한 AI의 홀카드가 새므로 금지.
+  table.on('handResult', (result) => {
+    const sockets = io.sockets.adapter.rooms.get(table.roomId);
+    if (!sockets) return;
+    for (const socketId of sockets) {
+      const meta = socketMeta.get(socketId);
+      const payload = meta ? table.getHandResultFor(meta.playerId) || result : result;
+      io.to(socketId).emit('handResult', payload);
+    }
+  });
   table.on('blindLevel', (level) => io.to(table.roomId).emit('blindLevel', level));
   table.on('playerJoined', () => broadcastLobby(table));
   table.on('playerDisconnected', () => broadcastLobby(table));
@@ -116,6 +126,7 @@ io.on('connection', (socket) => {
         // 받는다. 세부 검증/정규화는 BlindStructure가 담당하므로 여기서는 개수만 제한한다.
         blindLevels: Array.isArray(opts && opts.blindLevels) ? opts.blindLevels.slice(0, 60) : undefined,
         bbAnte: opts ? opts.bbAnte !== false : true,
+        showAiReview: opts ? opts.showAiReview !== false : true,
         aiSkillLevel: clampInt(opts && opts.aiSkillLevel, 0, 100, 75),
         aiActionDelayMs: clampInt(opts && opts.aiActionDelayMs, 0, 15000, 1500),
         actionTimeLimitSec: clampInt(opts && opts.actionTimeLimitSec, 0, 99, 0),

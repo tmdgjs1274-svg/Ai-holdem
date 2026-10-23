@@ -26,11 +26,11 @@ const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '�
 const LOBBY_EDITABLE = new Set([
   'aiCount', 'startingStack', 'rebuyAmount', 'bbAnte', 'blindLevels',
   'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec',
-  'maxRebuys', 'addOnAmount', 'interHandDelayMs',
+  'maxRebuys', 'addOnAmount', 'interHandDelayMs', 'showAiReview',
 ]);
 const LIVE_EDITABLE = new Set([
   'aiSkillLevel', 'aiActionDelayMs', 'actionTimeLimitSec', 'rebuyAmount', 'maxRebuys', 'addOnAmount',
-  'interHandDelayMs',
+  'interHandDelayMs', 'showAiReview',
 ]);
 
 // 접속이 끊긴 사람이 이 시간(ms) 이상 재연결하지 못하면, 방에 계속 남아 다른 사람의
@@ -95,6 +95,9 @@ class TableManager extends EventEmitter {
       allinRevealDelayMs: config.allinRevealDelayMs != null ? config.allinRevealDelayMs : ALLIN_REVEAL_DELAY_MS,
       aiCount: Math.max(0, Math.min(config.aiCount || 0, this.maxSeats - 1)),
       bbAnte: config.bbAnte !== false,
+      // 핸드 종료 후 결과 화면에서 "AI 액션 리뷰"(AI가 왜 그렇게 행동했는지)를 보여줄지 여부.
+      // 기본 켜짐. 호스트는 전원(폴드한 AI의 홀카드 포함), 게스트는 쇼다운까지 간 AI의 이유만 본다.
+      showAiReview: config.showAiReview !== false,
     };
 
     this.rng = config.rng || Math.random;
@@ -378,6 +381,9 @@ class TableManager extends EventEmitter {
       this.engine.setBlinds(this.blinds.getCurrent().sb, this.blinds.getCurrent().bb, this.blinds.getCurrent().ante);
       this.config.blindLevels = this.blinds.levels;
     }
+    if ('showAiReview' in applied) {
+      this.config.showAiReview = applied.showAiReview !== false;
+    }
     if ('aiSkillLevel' in applied) {
       this.config.aiSkillLevel = Math.max(0, Math.min(100, Number(applied.aiSkillLevel)));
     }
@@ -495,8 +501,10 @@ class TableManager extends EventEmitter {
 
     this._awaitingAiRebuy = false;
     this._lastHandResult = null;
+    this._lastHandReview = null;
     this._awaitingConfirmInfo = null;
     this.engine.startHand();
+    this._aiReviewLog = [];
     this.opponentModel.recordHandStart(this.engine.handSeatsInOrder());
     this._broadcastState();
     this._runAiLoop();
@@ -548,6 +556,7 @@ class TableManager extends EventEmitter {
     // 굳이 텀을 두지 않고 빠르게 진행한다 (아무도 지켜볼 필요가 없는 AI vs AI 액션)
     const delay = this._humanStillInHand() ? Math.max(0, this.config.aiActionDelayMs || 0) : 0;
     clearTimeout(this._aiActionTimer);
+    const reviewCtx = this._captureReviewContext(seat.seatIndex, decision);
     this._aiActionTimer = setTimeout(() => {
       if (this.status !== 'in_progress' || this.engine.actingSeat !== seat.seatIndex) {
         this._aiLoopActive = false;
@@ -560,6 +569,7 @@ class TableManager extends EventEmitter {
         this._aiLoopActive = false;
         return;
       }
+      if (reviewCtx) this._aiReviewLog.push(reviewCtx);
       this._revealBoardThenContinue(boardLenBefore, () => this._aiLoopStep());
     }, delay);
   }
@@ -625,6 +635,64 @@ class TableManager extends EventEmitter {
     });
   }
 
+  // ---------- AI 액션 리뷰 ----------
+
+  // AI가 액션을 "결정한 시점"의 상황(스트리트/팟/콜 금액/보드)과 이유를 기록용으로 캡처한다.
+  // 실제 액션 적용에 성공했을 때만 로그에 push한다(적용 실패 시 기록 안 함).
+  _captureReviewContext(seatIndex, decision) {
+    if (!this.config.showAiReview) return null;
+    const legal = this.engine.getLegalActions(seatIndex);
+    return {
+      seatIndex,
+      street: this.engine.street,
+      actionType: decision.actionType,
+      amount: decision.amount != null ? decision.amount : null,
+      callAmount: legal ? legal.callAmount : 0,
+      pot: this.engine.potNow(),
+      board: this.engine.board.map(cardToString),
+      reason: decision.reason || '(이유 정보 없음)',
+      equity: decision.meta && decision.meta.equity != null ? Math.round(decision.meta.equity * 1000) / 1000 : null,
+    };
+  }
+
+  // 이번 핸드의 AI 리뷰 원본(전원 포함)을 만든다. 호스트에게는 그대로, 게스트에게는
+  // getHandResultFor에서 쇼다운까지 간 AI만 걸러서 보낸다.
+  _buildAiReview() {
+    const log = this._aiReviewLog || [];
+    const players = [];
+    for (const seat of this.engine.occupiedSeats()) {
+      if (seat.type !== 'ai') continue;
+      const hs = this.engine.hs && this.engine.hs[seat.seatIndex];
+      if (!hs || !hs.inHand) continue;
+      players.push({
+        seatIndex: seat.seatIndex,
+        name: seat.displayName,
+        holeCards: hs.holeCards.map(cardToString),
+        folded: !!hs.folded,
+        actions: log
+          .filter((e) => e.seatIndex === seat.seatIndex)
+          .map(({ seatIndex, ...rest }) => rest),
+      });
+    }
+    return { handNumber: this.engine.handNumber, players };
+  }
+
+  // 특정 플레이어에게 보낼 핸드 결과(+ 권한에 맞게 걸러진 AI 리뷰)를 만든다.
+  // - 설정이 꺼져 있으면 aiReview 없음.
+  // - 호스트: 모든 AI(폴드한 AI의 홀카드 포함).
+  // - 게스트: 쇼다운까지 가서 카드가 이미 공개된 AI만(폴드한 AI의 홀카드/이유는 절대 포함 안 함).
+  getHandResultFor(playerId) {
+    if (!this._lastHandResult) return null;
+    const base = this._lastHandResult;
+    if (!this._lastHandReview || !this.config.showAiReview) return base;
+    if (playerId === this.hostId) {
+      return { ...base, aiReview: { ...this._lastHandReview, scope: 'all' } };
+    }
+    const shown = new Set((base.showdown || []).map((p) => p.seatIndex));
+    const players = this._lastHandReview.players.filter((p) => !p.folded && shown.has(p.seatIndex));
+    return { ...base, aiReview: { handNumber: this._lastHandReview.handNumber, scope: 'showdown', players } };
+  }
+
   _onHandEnd() {
     // 재진입 방지: _aiLoopActive 가드가 _onHandEnd 호출 "직전"에 풀리기 때문에,
     // 그 사이에 다른 경로(중첩된 handleAction 등)로 _runAiLoop가 다시 호출되면
@@ -640,6 +708,7 @@ class TableManager extends EventEmitter {
 
     const requiresConfirm = this._wasAnyHumanDealtThisHand();
     this._lastHandResult = { ...this.engine.lastHandResult, requiresConfirm };
+    this._lastHandReview = this.config.showAiReview ? this._buildAiReview() : null;
     this.emit('handResult', this._lastHandResult);
 
     // 파산자 처리
@@ -936,7 +1005,7 @@ class TableManager extends EventEmitter {
     const extras = {};
 
     if (this._lastHandResult && this.status === 'in_progress') {
-      extras.handResult = this._lastHandResult;
+      extras.handResult = this.getHandResultFor(playerId);
     }
     if (this.pendingRebuy.has(seatIdx)) {
       extras.rebuyRequired = {

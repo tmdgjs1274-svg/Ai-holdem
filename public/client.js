@@ -312,6 +312,7 @@ el('btn-create-submit').addEventListener('click', () => {
     // null이고, 그 경우 서버가 기본 12단계 표를 그대로 사용한다.
     blindLevels: currentBlindLevels || undefined,
     bbAnte: currentBbAnte,
+    showAiReview: el('create-showAiReview').checked,
   };
   socket.emit('createRoom', opts, (res) => {
     if (!res.ok) return toast('방 생성 실패: ' + res.error);
@@ -411,6 +412,7 @@ function openSettingsModal() {
   el('set-actionTimeLimit').value = cfg.actionTimeLimitSec || 0;
   el('set-aiSkill').value = cfg.aiSkillLevel;
   el('set-aiSkill-label').textContent = cfg.aiSkillLevel;
+  el('set-showAiReview').checked = cfg.showAiReview !== false;
 
   el('settings-modal').classList.remove('hidden');
 }
@@ -431,6 +433,7 @@ el('btn-settings-save').addEventListener('click', () => {
     aiActionDelayMs: Math.round(Number(el('set-aiActionDelay').value) * 1000),
     actionTimeLimitSec: Math.max(0, Math.min(99, Number(el('set-actionTimeLimit').value) || 0)),
     aiSkillLevel: Number(el('set-aiSkill').value),
+    showAiReview: el('set-showAiReview').checked,
   };
   if (isLobby) {
     patch.aiCount = Number(el('set-aiCount').value);
@@ -1153,9 +1156,92 @@ function renderResultModal(result) {
     });
   }
 
+  renderAiReview(result.aiReview);
   applyResultFooterState();
   el('result-modal').classList.remove('hidden');
 }
+
+// ---------- AI 액션 리뷰 (결과 모달 안의 접이식 섹션) ----------
+const STREET_KO = { preflop: '프리플랍', flop: '플랍', turn: '턴', river: '리버' };
+const ACTION_KO = { fold: '폴드', check: '체크', call: '콜', raise: '레이즈', allin: '올인', bet: '베팅' };
+
+function reviewActionLabel(a) {
+  const base = ACTION_KO[a.actionType] || a.actionType;
+  if (a.actionType === 'raise' && a.amount) return `${base} ${fmt(a.amount)}`;
+  if (a.actionType === 'call' && a.callAmount) return `${base} ${fmt(a.callAmount)}`;
+  return base;
+}
+
+function renderAiReview(review) {
+  const box = el('ai-review');
+  const body = el('ai-review-body');
+  body.innerHTML = '';
+  box.open = false;
+  if (!review || !review.players || !review.players.length) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  const isAll = review.scope === 'all';
+  el('ai-review-summary').textContent = isAll ? 'AI 액션 리뷰 (호스트 전용: 전원 공개)' : 'AI 액션 리뷰 (쇼다운까지 간 AI)';
+
+  review.players.forEach((p) => {
+    const card = document.createElement('div');
+    card.className = 'ai-rv-player' + (p.folded ? ' folded' : '');
+    const head = document.createElement('div');
+    head.className = 'ai-rv-head';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ai-rv-name';
+    nameSpan.textContent = p.name || seatDisplayName(p.seatIndex);
+    head.appendChild(nameSpan);
+    const cards = document.createElement('span');
+    cards.className = 'r-cards';
+    (p.holeCards || []).forEach((c) => cards.appendChild(cardEl(c)));
+    head.appendChild(cards);
+    if (p.folded) {
+      const tag = document.createElement('span');
+      tag.className = 'r-badge';
+      tag.textContent = '폴드';
+      head.appendChild(tag);
+    }
+    card.appendChild(head);
+
+    if (!p.actions.length) {
+      const none = document.createElement('div');
+      none.className = 'ai-rv-none';
+      none.textContent = '이번 핸드에서 액션할 기회가 없었어요(앞선 올인/폴드 등).';
+      card.appendChild(none);
+    }
+    let lastStreet = null;
+    p.actions.forEach((a) => {
+      if (a.street !== lastStreet) {
+        lastStreet = a.street;
+        const st = document.createElement('div');
+        st.className = 'ai-rv-street';
+        const boardTxt = a.board && a.board.length ? ` · 보드 ${a.board.join(' ')}` : '';
+        st.textContent = `${STREET_KO[a.street] || a.street}${boardTxt}`;
+        card.appendChild(st);
+      }
+      const row = document.createElement('div');
+      row.className = 'ai-rv-action';
+      const act = document.createElement('span');
+      act.className = 'ai-rv-act ' + a.actionType;
+      act.textContent = reviewActionLabel(a);
+      const why = document.createElement('span');
+      why.className = 'ai-rv-why';
+      why.textContent = `${a.reason} (팟 ${fmt(a.pot)})`;
+      row.appendChild(act);
+      row.appendChild(why);
+      card.appendChild(row);
+    });
+    body.appendChild(card);
+  });
+}
+
+// 리뷰를 펼쳐서 읽는 동안에는 결과창이 자동으로 닫히지 않도록 자동 닫힘 타이머를 멈춘다.
+el('ai-review').addEventListener('toggle', () => {
+  if (el('ai-review').open) clearTimeout(resultAutoTimer);
+});
 
 // 결과 화면 하단(자동 진행 안내 / 다음 핸드 시작 버튼)을 마지막 결과 기준으로 다시 그린다.
 // 리바인 확인이 끝난 뒤 원래 안내로 복귀할 때도 재사용한다.

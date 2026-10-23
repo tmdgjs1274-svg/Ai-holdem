@@ -21,6 +21,8 @@ async function main() {
   require('./aiAdvanced.test').run();
   console.log('\n== TableManager ==');
   await require('./tableManager.test').run();
+  console.log('\n== AI 액션 리뷰 ==');
+  await require('./aiReview.test').run();
   console.log('\n모든 테스트 통과 ✅');
 }
 

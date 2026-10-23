@@ -223,6 +223,16 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   const plan = hs.aiPlan && hs.aiPlan.dueStreet === engine.street ? hs.aiPlan : null;
   hs.aiPlan = null;
 
+  // ---- AI 액션 리뷰용 설명 조각 (판단에는 영향 없음) ----
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const wetLabel = texture.wetness >= 0.6 ? '웻' : texture.wetness >= 0.3 ? '중간' : '드라이';
+  const textureTxt = `보드 ${wetLabel}(${texture.wetness.toFixed(2)})`;
+  const handTxt = heroBest.name || '핸드';
+  const dampTxt = onePairDamp < 1 ? ` · 세컨페어 이하 원페어라 공격성 ×${onePairDamp.toFixed(2)} 감쇠` : '';
+  const discTxt = noPairWetBoardDiscount(heroCategory, texture) > 0 ? ` · 노페어 웻보드 이퀴티 할인 −${pct(noPairWetBoardDiscount(heroCategory, texture))}p` : '';
+  const baseTxt = `${handTxt}, 이퀴티 ${pct(equity)}(상대 ${numOpponents}명), ${textureTxt}${dampTxt}${discTxt}`;
+  const mk = (extra) => ({ reason: `${baseTxt} → ${extra}`, meta: { equity, street: engine.street, texture: wetLabel } });
+
   if (legal.callAmount === 0) {
     // 체크로 넘어온 상황(내 차례에 아무도 베팅하지 않음): 베팅 여부 결정
 
@@ -230,25 +240,32 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     // 계획했었다면, 이번 판단의 순간적인 이퀴티 판독과 무관하게 계획대로 베팅을 이어간다
     // (실제로 계속 밀어붙이지 않으면 애초에 계획을 세운 의미가 없다).
     if (plan && plan.type === 'delayedBluff' && legal.canRaise && rng() < 0.8) {
-      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)) };
+      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk('지난 스트리트에 세운 "지연 블러프" 계획대로 베팅 이어감') };
     }
 
+    let checkNote = '베팅할 만큼의 이점이 없어 체크';
+    let slowplayed = false;
     if (equity > 0.68) {
       // 세컨페어(이하)인데도 무작위 레인지 기준 이퀴티가 0.68을 넘어 이 "강한 밸류벳" 구간에
       // 들어온 경우에도 onePairDamp를 함께 적용한다(그 외 손패는 damp=1이라 영향 없음).
       const raiseChance = clamp(0.88 * exploit.valueMult * onePairDamp, 0.25, 0.97);
       if (legal.canRaise && rng() < raiseChance) {
-        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.62 + rng() * 0.18, texture, textureWeight) * exploit.valueMult) };
+        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.62 + rng() * 0.18, texture, textureWeight) * exploit.valueMult), ...mk(`강한 밸류벳(이퀴티 > 68%, 베팅 확률 ${pct(raiseChance)})`) };
       }
       // 슬로우플레이 플랜: 아주 강한 패인데도 이번엔 베팅하지 않고 체크로 넘어가기로 했다면,
       // 다음 스트리트에는 계획대로 크게 베팅/레이즈해서 상대를 더 물게 만든다.
       if (planWeight > 0 && NEXT_STREET[engine.street] && rng() < 0.35 * planWeight) {
         hs.aiPlan = { type: 'slowplay', dueStreet: NEXT_STREET[engine.street] };
+        slowplayed = true;
       }
+      checkNote = slowplayed
+        ? `강한 패지만 슬로우플레이(체크) - 다음 스트리트에 크게 베팅/레이즈 예정`
+        : `강한 패지만 이번엔 베팅 대신 체크(베팅 확률 ${pct(raiseChance)}, 믹스 전략)`;
     } else if (equity > 0.45) {
       if (legal.canRaise && rng() < 0.4 * onePairDamp) {
-        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.45 + rng() * 0.15, texture, textureWeight)) };
+        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.45 + rng() * 0.15, texture, textureWeight)), ...mk(`중간 강도 얇은 밸류/프로텍션 벳(이퀴티 45~68%, 베팅 확률 ${pct(0.4 * onePairDamp)})`) };
       }
+      checkNote = `중간 강도 - 팟 컨트롤/쇼다운 밸류 유지를 위해 체크(베팅 확률 ${pct(0.4 * onePairDamp)}${onePairDamp < 1 ? ', 세컨페어 감쇠 반영' : ''})`;
     } else {
       // 순수 블러프(체크로 넘어왔는데 에퀴티가 낮은데도 베팅) 빈도. 예전에는 0.28을 기준으로
       // 써서 헤즈업 기준 최대 14%, 상대가 적을수록 더 자주 블러프를 걸었는데, 사용자 피드백
@@ -263,15 +280,17 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
       const blendedBaseFreq = baseBluffFreq + (gtoFreq - baseBluffFreq) * advancedWeight;
       const bluffFreq = textureBluffAdjust(blendedBaseFreq, texture, textureWeight) * exploit.bluffMult;
       if (legal.canRaise && rng() < bluffFreq) {
-        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)) };
+        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk(`블러프 벳(이퀴티 낮음, 블러프 빈도 ${pct(bluffFreq)}: ${advancedWeight > 0.5 ? 'GTO 폴라라이즈 비율 반영' : '기본 휴리스틱'}${exploit.bluffMult !== 1 ? `, 상대 성향 보정 ×${exploit.bluffMult.toFixed(2)}` : ''})`) };
       }
+      checkNote = `이퀴티가 낮아 체크(블러프 빈도 ${pct(bluffFreq)} 미당첨)`;
       // 지금 당장은 블러프를 안 걸기로 했더라도, 다음 스트리트에 이어서 블러프를 걸어보는
       // "지연 블러프"(체크 후 턴에 블러프 이어가기) 계획을 대신 세울 수 있다.
       if (planWeight > 0 && NEXT_STREET[engine.street] && rng() < bluffFreq * 1.5 * planWeight) {
         hs.aiPlan = { type: 'delayedBluff', dueStreet: NEXT_STREET[engine.street] };
+        checkNote += ' · 다음 스트리트 블러프 이어가기 계획 수립';
       }
     }
-    return { actionType: 'check' };
+    return { actionType: 'check', ...mk(checkNote) };
   }
 
   // 상대 베팅에 대응
@@ -280,8 +299,10 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   // 슬로우플레이 플랜이 실현되는 순간: 지난 스트리트에 트랩을 깔아뒀는데 상대가 먼저
   // 베팅해왔다면, 그냥 콜만 하지 않고 훨씬 자주 (체크)레이즈로 되받아친다.
   if (plan && plan.type === 'slowplay' && equity > requiredEquity && legal.canRaise && rng() < 0.75) {
-    return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.75 + rng() * 0.2, texture, textureWeight)) };
+    return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.75 + rng() * 0.2, texture, textureWeight)), ...mk(`슬로우플레이 계획 실현: 이퀴티 ${pct(equity)} > 필요 ${pct(requiredEquity)} → 체크레이즈`) };
   }
+
+  const potOddsTxt = `콜 ${legal.callAmount} / 팟 ${pot + legal.callAmount} → 필요 이퀴티 ${pct(requiredEquity)}`;
 
   if (equity > requiredEquity + 0.22) {
     // 콜에 필요한 에퀴티보다 여유 있게 앞서는 구간에서의 레이즈(밸류/세미블러프성) 빈도.
@@ -289,12 +310,16 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     // 손패는 onePairDamp로 한 번 더 줄여, 웻한 보드일수록 레이즈보다 콜(쇼다운밸류 유지/
     // 브러프캐치)을 선호하게 한다.
     if (legal.canRaise && rng() < 0.4 * onePairDamp) {
-      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.65 + rng() * 0.2, texture, textureWeight) * exploit.valueMult) };
+      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.65 + rng() * 0.2, texture, textureWeight) * exploit.valueMult), ...mk(`필요 이퀴티(${pct(requiredEquity)})보다 22%p 넘게 앞서 레이즈(${potOddsTxt}, 레이즈 확률 ${pct(0.4 * onePairDamp)})`) };
     }
-    return legal.canCall ? { actionType: 'call' } : { actionType: 'check' };
+    return legal.canCall
+      ? { actionType: 'call', ...mk(`필요 이퀴티보다 크게 앞서지만 레이즈 대신 콜(${potOddsTxt}, 레이즈 확률 ${pct(0.4 * onePairDamp)}${onePairDamp < 1 ? ' - 세컨페어 감쇠로 콜 선호' : ''})`) }
+      : { actionType: 'check', ...mk('콜할 금액 없음 → 체크') };
   }
   if (equity > requiredEquity) {
-    return legal.canCall ? { actionType: 'call' } : { actionType: 'check' };
+    return legal.canCall
+      ? { actionType: 'call', ...mk(`팟오즈상 콜 이득(${potOddsTxt})`) }
+      : { actionType: 'check', ...mk('콜할 금액 없음 → 체크') };
   }
 
   const gap = requiredEquity - equity;
@@ -310,13 +335,15 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     const oldBluffcatchProb = 0.3 * quirk; // 실력 낮을수록 예전처럼 고정 확률(quirk 배율) 유지
     const bluffcatchProb = oldBluffcatchProb + (gtoBluffcatchProb - oldBluffcatchProb) * advancedWeight;
     if (rng() < bluffcatchProb) {
-      return { actionType: 'call' };
+      return { actionType: 'call', ...mk(`브러프캐치 콜: 이퀴티가 필요치에 ${pct(gap)}p 모자라지만 근접(${potOddsTxt}), 최소방어빈도(MDF) 블렌드 콜 확률 ${pct(bluffcatchProb)}`) };
     }
   }
   if (equity > 0.3 && equity < 0.5 && legal.canRaise && rng() < 0.08 * quirk) {
-    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6) }; // 세미블러프(실력 100%면 0)
+    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6), ...mk('세미블러프 레이즈(낮은 확률 믹스, 실력 높을수록 줄어듦)') }; // 세미블러프(실력 100%면 0)
   }
-  return { actionType: legal.canCheck ? 'check' : 'fold' };
+  return legal.canCheck
+    ? { actionType: 'check', ...mk('무료로 체크') }
+    : { actionType: 'fold', ...mk(`폴드: 이퀴티 ${pct(equity)} < 필요 ${pct(requiredEquity)}(${potOddsTxt}), 부족분 ${pct(gap)}p${gap < 0.08 ? ' - 브러프캐치 확률 미당첨' : ''}`) };
 }
 
 module.exports = {
