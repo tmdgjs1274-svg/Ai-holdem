@@ -6,7 +6,7 @@ const { decidePostflop } = require('./PostflopHeuristic');
 // 결정된 액션이 실제로 합법적인지 최종 방어. 불법이면 합리적인 액션으로 강등.
 function sanitize(legal, decision) {
   let { actionType, amount } = decision;
-  const { reason, meta } = decision;
+  const { reason, meta, detail, situation } = decision;
   const original = actionType;
 
   if (actionType === 'raise' && !legal.canRaise) {
@@ -27,10 +27,13 @@ function sanitize(legal, decision) {
   }
   let outReason = reason;
   if (outReason && original !== actionType) {
-    outReason += ` (※ ${original}은(는) 불가능해 ${actionType}(으)로 보정됨)`;
+    const ko = { fold: '폴드', check: '체크', call: '콜', raise: '레이즈', allin: '올인' };
+    outReason += ` (원래는 ${ko[original] || original}하려 했지만 규칙상 할 수 없어 ${ko[actionType] || actionType}(으)로 바뀌었어요.)`;
   }
   const out = { actionType, amount };
   if (outReason) out.reason = outReason;
+  if (situation) out.situation = situation;
+  if (detail) out.detail = detail;
   if (meta) out.meta = meta;
   return out;
 }

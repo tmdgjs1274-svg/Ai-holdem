@@ -20,6 +20,9 @@ function generateRoomCode(len = 4) {
   return code;
 }
 
+// 호스트가 접속해 있지 않을 때만 쓰는, 다음 핸드 자동 진행 안전장치 대기 시간(ms)
+const NEXT_HAND_FALLBACK_MS = 60000;
+
 const AI_NAMES = ['봇 알파', '봇 브라보', '봇 찰리', '봇 델타', '봇 에코', '봇 폭스트롯', '봇 골프', '봇 호텔'];
 
 // 로비(시작 전)에서는 폭넓게, 게임 진행 중에는 안전한 항목만 수정 허용
@@ -214,6 +217,8 @@ class TableManager extends EventEmitter {
     this.humanBySeat[seatIdx].connected = true;
     this.humanBySeat[seatIdx].disconnectedAt = null;
     clearTimeout(this._disconnectGuardTimer);
+    // 호스트가 돌아왔으면 "호스트 부재" 안전장치는 해제하고 다시 호스트의 결정을 기다린다.
+    if (playerId === this.hostId && this._awaitingConfirmInfo) clearTimeout(this._nextHandFallbackTimer);
     // 재접속한 시점이 마침 이 사람 차례라면, 베팅 제한시간이 켜져 있는 경우 그때부터 다시
     // 정상적으로 카운트다운이 시작되게 한다(그동안은 접속이 끊겨 있었으니 적용되지 않았음).
     this._scheduleActionClock();
@@ -226,6 +231,8 @@ class TableManager extends EventEmitter {
     this.humanBySeat[seatIdx].connected = false;
     this.humanBySeat[seatIdx].disconnectedAt = Date.now();
     this.emit('playerDisconnected', { seatIndex: seatIdx, playerId });
+    // 호스트가 결과 확인 대기 중에 접속이 끊기면, 남은 사람들이 막히지 않도록 그때부터 안전장치를 건다.
+    if (playerId === this.hostId && this._awaitingConfirmInfo && this.status === 'in_progress') this._armNextHandFallback();
     this._scheduleDisconnectGuard();
   }
 
@@ -651,6 +658,8 @@ class TableManager extends EventEmitter {
       pot: this.engine.potNow(),
       board: this.engine.board.map(cardToString),
       reason: decision.reason || '(이유 정보 없음)',
+      situation: decision.situation || null,
+      detail: decision.detail || null,
       equity: decision.meta && decision.meta.equity != null ? Math.round(decision.meta.equity * 1000) / 1000 : null,
     };
   }
@@ -798,8 +807,23 @@ class TableManager extends EventEmitter {
     this._awaitingConfirmInfo = { humanSeats };
     this.emit('awaitNextHand', { humanSeats, readySeats: [...this.readyForNext] });
     clearTimeout(this._nextHandFallbackTimer);
-    // 응답 없는(자리 비움) 플레이어 때문에 게임이 영원히 멈추지 않도록 하는 안전장치
-    this._nextHandFallbackTimer = setTimeout(() => this._playNextHand(), 20000);
+    // 호스트가 이 결과 화면을 보고 있는 동안에는 절대 자동으로 넘어가지 않는다(호스트가 "다음 핸드
+    // 시작"을 누를 때까지 무한정 대기). 예전에는 20초 안전장치가 호스트가 있어도 작동해서,
+    // AI 액션 리뷰처럼 결과를 천천히 읽는 중에도 호스트가 누르지 않았는데 다음 핸드가 시작되어
+    // 버렸다. 안전장치는 "결정해줄 호스트가 접속해 있지 않은" 경우에만 건다.
+    if (!this._hostIsWaiting(humanSeats)) this._armNextHandFallback();
+  }
+
+  // 호스트가 좌석에 앉아 있고 지금 접속 중인지(=다음 핸드 시작을 직접 결정할 수 있는지)
+  _hostIsWaiting(connectedHumanSeats) {
+    const hostSeatIdx = this.seatByPlayer[this.hostId];
+    return hostSeatIdx != null && connectedHumanSeats.includes(hostSeatIdx);
+  }
+
+  // 결정권자(호스트)가 없어서 남은 사람들이 영원히 기다리지 않도록 하는 안전장치
+  _armNextHandFallback() {
+    clearTimeout(this._nextHandFallbackTimer);
+    this._nextHandFallbackTimer = setTimeout(() => this._playNextHand(), NEXT_HAND_FALLBACK_MS);
   }
 
   // 다음 핸드로 넘어가기 위해 "준비"를 눌러야 하는 좌석 집합. 원칙은 호스트 한 명만 누르면

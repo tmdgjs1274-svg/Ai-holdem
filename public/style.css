@@ -405,3 +405,15 @@ input.raise-amount-input {
 .ai-rv-act.fold { background: rgba(160,160,160,0.3); }
 .ai-rv-why { color: #dfeee6; word-break: keep-all; overflow-wrap: anywhere; }
 .ai-rv-none { font-size: 12px; color: #9fd8ba; margin-top: 4px; }
+
+.ai-rv-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.ai-rv-tip { color: #9fd8ba; }
+.ai-rv-detail-toggle { font-size: 12px; white-space: nowrap; }
+.ai-rv-detail-toggle input[type="checkbox"] { width: 16px; height: 16px; }
+.ai-rv-board { display: inline-flex; gap: 3px; margin-left: 8px; vertical-align: middle; }
+.ai-rv-board .playing-card { width: 20px; height: 28px; font-size: 10px; }
+.ai-rv-whybox { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ai-rv-why { font-size: 13px; line-height: 1.5; }
+.ai-rv-sit { font-size: 11px; color: #9fd8ba; }
+.ai-rv-detail { display: none; font-size: 11px; color: #b9c9c0; background: rgba(0,0,0,0.25); border-radius: 4px; padding: 3px 6px; margin-top: 2px; }
+.ai-review-body.show-detail .ai-rv-detail { display: block; }

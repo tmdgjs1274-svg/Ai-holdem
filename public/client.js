@@ -1162,14 +1162,28 @@ function renderResultModal(result) {
 }
 
 // ---------- AI 액션 리뷰 (결과 모달 안의 접이식 섹션) ----------
-const STREET_KO = { preflop: '프리플랍', flop: '플랍', turn: '턴', river: '리버' };
+const STREET_KO = {
+  preflop: '처음 카드 2장만 보고 결정 (프리플랍)',
+  flop: '카드 3장 공개 (플랍)',
+  turn: '4번째 카드 공개 (턴)',
+  river: '마지막 카드 공개 (리버)',
+};
 const ACTION_KO = { fold: '폴드', check: '체크', call: '콜', raise: '레이즈', allin: '올인', bet: '베팅' };
 
 function reviewActionLabel(a) {
-  const base = ACTION_KO[a.actionType] || a.actionType;
+  // 포스트플랍에서 아무도 베팅하지 않은 상태의 첫 raise는 "베팅"으로 보여준다(게임 화면과 동일한 표기).
+  let base = ACTION_KO[a.actionType] || a.actionType;
+  if (a.actionType === 'raise' && a.street !== 'preflop' && !a.callAmount) base = '베팅';
   if (a.actionType === 'raise' && a.amount) return `${base} ${fmt(a.amount)}`;
   if (a.actionType === 'call' && a.callAmount) return `${base} ${fmt(a.callAmount)}`;
   return base;
+}
+
+function aiReviewDetailPref() {
+  try { return localStorage.getItem('holdem_aiReviewDetail') === '1'; } catch (e) { return false; }
+}
+function setAiReviewDetailPref(on) {
+  try { localStorage.setItem('holdem_aiReviewDetail', on ? '1' : '0'); } catch (e) { /* 저장 실패는 무시 */ }
 }
 
 function renderAiReview(review) {
@@ -1184,6 +1198,28 @@ function renderAiReview(review) {
   box.classList.remove('hidden');
   const isAll = review.scope === 'all';
   el('ai-review-summary').textContent = isAll ? 'AI 액션 리뷰 (호스트 전용: 전원 공개)' : 'AI 액션 리뷰 (쇼다운까지 간 AI)';
+
+  // 맨 위: 쉬운 설명 안내 + "숫자 자세히 보기" 스위치(기본 꺼짐)
+  const tools = document.createElement('div');
+  tools.className = 'ai-rv-tools';
+  const tip = document.createElement('span');
+  tip.className = 'ai-rv-tip';
+  tip.textContent = '각 액션을 왜 했는지 쉬운 말로 풀어 적었어요.';
+  const lab = document.createElement('label');
+  lab.className = 'checkbox-label ai-rv-detail-toggle';
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.checked = aiReviewDetailPref();
+  body.classList.toggle('show-detail', chk.checked);
+  chk.addEventListener('change', () => {
+    body.classList.toggle('show-detail', chk.checked);
+    setAiReviewDetailPref(chk.checked);
+  });
+  lab.appendChild(chk);
+  lab.appendChild(document.createTextNode(' 숫자 자세히 보기'));
+  tools.appendChild(tip);
+  tools.appendChild(lab);
+  body.appendChild(tools);
 
   review.players.forEach((p) => {
     const card = document.createElement('div');
@@ -1218,8 +1254,13 @@ function renderAiReview(review) {
         lastStreet = a.street;
         const st = document.createElement('div');
         st.className = 'ai-rv-street';
-        const boardTxt = a.board && a.board.length ? ` · 보드 ${a.board.join(' ')}` : '';
-        st.textContent = `${STREET_KO[a.street] || a.street}${boardTxt}`;
+        st.appendChild(document.createTextNode(STREET_KO[a.street] || a.street));
+        if (a.board && a.board.length) {
+          const bw = document.createElement('span');
+          bw.className = 'ai-rv-board';
+          a.board.forEach((c) => bw.appendChild(cardEl(c)));
+          st.appendChild(bw);
+        }
         card.appendChild(st);
       }
       const row = document.createElement('div');
@@ -1227,11 +1268,26 @@ function renderAiReview(review) {
       const act = document.createElement('span');
       act.className = 'ai-rv-act ' + a.actionType;
       act.textContent = reviewActionLabel(a);
-      const why = document.createElement('span');
+      const whyBox = document.createElement('div');
+      whyBox.className = 'ai-rv-whybox';
+      const why = document.createElement('div');
       why.className = 'ai-rv-why';
-      why.textContent = `${a.reason} (팟 ${fmt(a.pot)})`;
+      why.textContent = a.reason;
+      whyBox.appendChild(why);
+      if (a.situation) {
+        const sit = document.createElement('div');
+        sit.className = 'ai-rv-sit';
+        sit.textContent = `상황: ${a.situation} · 판돈 ${fmt(a.pot)}`;
+        whyBox.appendChild(sit);
+      }
+      if (a.detail) {
+        const det = document.createElement('div');
+        det.className = 'ai-rv-detail';
+        det.textContent = `숫자: ${a.detail}`;
+        whyBox.appendChild(det);
+      }
       row.appendChild(act);
-      row.appendChild(why);
+      row.appendChild(whyBox);
       card.appendChild(row);
     });
     body.appendChild(card);

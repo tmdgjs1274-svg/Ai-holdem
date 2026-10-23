@@ -3,6 +3,7 @@
 const { chenScore } = require('./Equity');
 const { roundRaiseTo, quirkFactor, bigBlunderChance, mixFrequency } = require('./util');
 const { getPositionCategory } = require('../game/Position');
+const { handStrengthLabel, positionKo } = require('./Explain');
 
 // 9-max 기준 포지션별 오픈레이즈 최소 점수 (풀링 기준선)
 const BASE_OPEN_THRESHOLD = {
@@ -109,19 +110,27 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const POS = ctx.position;
   const sc = score.toFixed(1);
   const lvName = ['오픈 전', '오픈 레이즈 상대', '3벳 상대', '4벳 이상 상대'][ctx.raiseLevel] || '레이즈 상대';
+  // 쉬운 말 설명용: 패 등급 / 자리 이름 / 상대가 어떻게 나왔는지 (판단에는 영향 없음)
+  const label = handStrengthLabel(score);
+  const adj = label.replace(/ 패$/, ''); // '약한', '애매한' 처럼 '패' 없이 꾸며주는 말
+  const posKo = positionKo(POS);
+  const facing = ctx.raiseLevel >= 2 ? '상대가 이미 여러 번 판돈을 올린 상황' : '상대가 판돈을 올린 상황';
+  const situation = `${label} · ${posKo} · ${ctx.numActive}명 참여`;
+  const mk = (plain, detail) => ({ reason: plain, situation, detail });
 
   if (ctx.effectiveStackBb <= 15) {
     let shoveThresh = pushFoldThreshold(ctx.position, ctx.effectiveStackBb);
     if (!unopenedPot) shoveThresh += 1 + ctx.raiseLevel;
     const stk = Math.round(ctx.effectiveStackBb);
+    const stkPlain = `칩이 얼마 남지 않아(빅블라인드 약 ${stk}개 분량) 올인하거나 포기하는 두 가지 선택만 남은 상황이에요.`;
     if (score >= shoveThresh) {
       if (legal.canRaise) {
-        return { actionType: 'allin', reason: `숏스택 푸시/폴드(${stk}bb): ${POS} 핸드 점수 ${sc} ≥ 셔브 기준 ${shoveThresh.toFixed(1)} → 올인` };
+        return { actionType: 'allin', ...mk(`${stkPlain} 이 패는 올인해 볼 만하다고 보고 전부 걸었어요.`, `숏스택 푸시/폴드(${stk}bb): ${POS} 핸드 점수 ${sc} ≥ 셔브 기준 ${shoveThresh.toFixed(1)} → 올인`) };
       }
-      return { actionType: legal.canCall ? 'call' : 'check', reason: `숏스택(${stk}bb): 점수 ${sc} ≥ 기준 ${shoveThresh.toFixed(1)}이나 레이즈 불가 → 콜/체크` };
+      return { actionType: legal.canCall ? 'call' : 'check', ...mk(`${stkPlain} 올인할 만한 패지만 더 올릴 수는 없어서 그대로 따라갔어요.`, `숏스택(${stk}bb): 점수 ${sc} ≥ 기준 ${shoveThresh.toFixed(1)}이나 레이즈 불가 → 콜/체크`) };
     }
-    if (unopenedPot && legal.canCheck) return { actionType: 'check', reason: `숏스택(${stk}bb): 점수 ${sc} < 셔브 기준 ${shoveThresh.toFixed(1)}, 공짜로 체크` };
-    return { actionType: 'fold', reason: `숏스택(${stk}bb): ${POS} 점수 ${sc} < 셔브 기준 ${shoveThresh.toFixed(1)} → 폴드` };
+    if (unopenedPot && legal.canCheck) return { actionType: 'check', ...mk(`${stkPlain} 올인할 만한 패는 아니지만 공짜로 볼 수 있어서 체크했어요.`, `숏스택(${stk}bb): 점수 ${sc} < 셔브 기준 ${shoveThresh.toFixed(1)}, 공짜로 체크`) };
+    return { actionType: 'fold', ...mk(`${stkPlain} 올인할 만큼 강한 패가 아니라서 이번 판은 포기했어요.`, `숏스택(${stk}bb): ${POS} 점수 ${sc} < 셔브 기준 ${shoveThresh.toFixed(1)} → 폴드`) };
   }
 
   const openThresh = ctx.openThreshold + ctx.raiseLevel * 2.2;
@@ -132,14 +141,14 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
     // 오픈 여부 결정: 레이즈-오어-폴드 원칙 (림프는 최소화, 가끔 사람처럼 림프)
     if (score >= openThresh) {
       if (legal.canRaise) {
-        return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), reason: `${POS} 오픈 레이즈: 점수 ${sc} ≥ 오픈 기준 ${openThresh.toFixed(1)}(${ctx.numActive}인 테이블 보정 반영)` };
+        return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), ...mk(score >= 9 ? `${label}라서 판돈을 올려 판을 먼저 시작했어요.` : `패는 ${adj} 편이지만 ${posKo}는 유리한 자리라서, 먼저 판돈을 올려 판을 시작해 볼 만하다고 봤어요.`, `${POS} 오픈 레이즈: 점수 ${sc} ≥ 오픈 기준 ${openThresh.toFixed(1)}(${ctx.numActive}인 테이블 보정 반영)`) };
       }
-      if (legal.canCheck) return { actionType: 'check', reason: `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 체크` };
-      return { actionType: 'call', reason: `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 콜` };
+      if (legal.canCheck) return { actionType: 'check', ...mk(`올려 볼 만한 패지만 올릴 수 없는 상황이라 체크했어요.`, `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 체크`) };
+      return { actionType: 'call', ...mk(`올려 볼 만한 패지만 올릴 수 없는 상황이라 따라갔어요.`, `점수 ${sc} ≥ 오픈 기준이나 레이즈 불가 → 콜`) };
     }
-    if (legal.canCheck) return { actionType: 'check', reason: `BB 무료 옵션: 점수 ${sc} < 오픈 기준 ${openThresh.toFixed(1)}이라 레이즈 없이 체크` };
-    if (legal.canCall && rng() < 0.06 * quirk) return { actionType: 'call', reason: `${POS} 림프: 점수 ${sc}로 오픈 기준(${openThresh.toFixed(1)}) 미달이나 낮은 확률의 림프 섞기(실력이 높을수록 줄어듦)` };
-    return { actionType: 'fold', reason: `${POS} 폴드: 점수 ${sc} < 오픈 기준 ${openThresh.toFixed(1)}` };
+    if (legal.canCheck) return { actionType: 'check', ...mk(`빅블라인드라 공짜로 다음 카드를 볼 수 있어요. 올릴 만큼 좋은 패는 아니어서 그냥 체크했어요.`, `BB 무료 옵션: 점수 ${sc} < 오픈 기준 ${openThresh.toFixed(1)}이라 레이즈 없이 체크`) };
+    if (legal.canCall && rng() < 0.06 * quirk) return { actionType: 'call', ...mk(`${label}라서 보통은 접는 상황인데, 가끔은 일부러 싸게 들어가서 상대가 내 패를 읽기 어렵게 만들어요.`, `${POS} 림프: 점수 ${sc}로 오픈 기준(${openThresh.toFixed(1)}) 미달이나 낮은 확률의 림프 섞기(실력이 높을수록 줄어듦)`) };
+    return { actionType: 'fold', ...mk(`${label}인데 ${posKo}에서는 불리해서, 돈을 쓰지 않고 포기했어요.`, `${POS} 폴드: 점수 ${sc} < 오픈 기준 ${openThresh.toFixed(1)}`) };
   }
 
   // 실제 레이즈(또는 3벳 이상)에 대응하는 상황
@@ -151,25 +160,25 @@ function decidePreflop(engine, seatIndex, legal, opts = {}) {
   const bluffRoll = rng() < 0.09 * mix && ctx.numActive <= 5;
 
   if (score >= raiseThresh && legal.canRaise) {
-    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), reason: `${POS} 밸류 ${ctx.raiseLevel >= 2 ? '4벳+' : '3벳'}: ${lvName}, 점수 ${sc} ≥ 레이즈 기준 ${raiseThresh.toFixed(1)}` };
+    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), ...mk(`${facing}이지만 내 패(${label})가 상대보다 앞선다고 보고, 다시 크게 올렸어요.`, `${POS} 밸류 ${ctx.raiseLevel >= 2 ? '4벳+' : '3벳'}: ${lvName}, 점수 ${sc} ≥ 레이즈 기준 ${raiseThresh.toFixed(1)}`) };
   }
   if (bluffWindow && bluffRoll && legal.canRaise) {
-    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), reason: `${POS} 블러프 3벳: 점수 ${sc}(콜 기준 ${callThresh.toFixed(1)} 부근)로 늦은 포지션 + 소수 인원 → 밸런스용 블러프 레이즈(빈도 ${(0.09 * mix * 100).toFixed(1)}%)` };
+    return { actionType: 'raise', amount: sizePreflopRaise(engine, legal, ctx, rng), ...mk(`패는 ${adj} 편이지만 ${posKo}라서 일부러 센 척(허세)하며 크게 다시 올렸어요. 강한 패로만 올리면 상대가 읽어버려서 가끔 이렇게 섞어요.`, `${POS} 블러프 3벳: 점수 ${sc}(콜 기준 ${callThresh.toFixed(1)} 부근)로 늦은 포지션 + 소수 인원 → 밸런스용 블러프 레이즈(빈도 ${(0.09 * mix * 100).toFixed(1)}%)`) };
   }
   if (score >= callThresh) {
-    if (legal.canCheck) return { actionType: 'check', reason: `점수 ${sc} ≥ 콜 기준 ${callThresh.toFixed(1)}, 추가 비용 없이 체크` };
-    if (legal.canCall) return { actionType: 'call', reason: `${POS} 콜: ${lvName}, 점수 ${sc}가 콜 기준 ${callThresh.toFixed(1)} 이상 ~ 레이즈 기준 ${raiseThresh.toFixed(1)} 미만` };
-    return { actionType: 'fold', reason: `콜 불가 상황 → 폴드` };
+    if (legal.canCheck) return { actionType: 'check', ...mk(`추가로 낼 돈이 없어서 그냥 체크했어요.`, `점수 ${sc} ≥ 콜 기준 ${callThresh.toFixed(1)}, 추가 비용 없이 체크`) };
+    if (legal.canCall) return { actionType: 'call', ...mk(`${facing}이에요. 다시 올릴 만큼 강하진 않지만 내 패(${label})를 그냥 버리긴 아깝다고 보고 따라갔어요.`, `${POS} 콜: ${lvName}, 점수 ${sc}가 콜 기준 ${callThresh.toFixed(1)} 이상 ~ 레이즈 기준 ${raiseThresh.toFixed(1)} 미만`) };
+    return { actionType: 'fold', ...mk(`따라갈 수 없는 상황이라 포기했어요.`, `콜 불가 상황 → 폴드`) };
   }
   // callThresh에 살짝 못 미치지만 가끔 더 버텨보는 콜(3벳/4벳에 대한 콜다운 포함). 이것도
   // "실수"가 아니라 레인지를 너무 타이트하게 읽히지 않기 위한 밸런스 플레이라 mixFrequency를
   // 쓴다 - 실력 100%에서도 절반 정도(2.5%)는 유지되어 "3벳에 콜을 전혀 안 한다"는 문제를 줄인다.
   if (legal.canCall && rng() < 0.05 * mix) {
-    return { actionType: 'call', reason: `${POS} 밸런스 콜: 점수 ${sc} < 콜 기준 ${callThresh.toFixed(1)}이나 너무 타이트하게 읽히지 않도록 가끔 버티는 콜(빈도 ${(0.05 * mix * 100).toFixed(1)}%)` };
+    return { actionType: 'call', ...mk(`${label}라서 보통은 접는 상황인데, 너무 쉽게 접으면 상대가 마음껏 올릴 수 있어서 이번에는 일부러 버텨 봤어요.`, `${POS} 밸런스 콜: 점수 ${sc} < 콜 기준 ${callThresh.toFixed(1)}이나 너무 타이트하게 읽히지 않도록 가끔 버티는 콜(빈도 ${(0.05 * mix * 100).toFixed(1)}%)`) };
   }
   return legal.canCheck
-    ? { actionType: 'check', reason: `점수 ${sc} < 콜 기준이나 무료로 체크` }
-    : { actionType: 'fold', reason: `${POS} 폴드: ${lvName}, 점수 ${sc} < 콜 기준 ${callThresh.toFixed(1)}` };
+    ? { actionType: 'check', ...mk(`추가로 낼 돈이 없어서 그냥 체크했어요.`, `점수 ${sc} < 콜 기준이나 무료로 체크`) }
+    : { actionType: 'fold', ...mk(`${facing}인데, 내 패(${label})로는 따라가 봐야 손해라고 보고 포기했어요.`, `${POS} 폴드: ${lvName}, 점수 ${sc} < 콜 기준 ${callThresh.toFixed(1)}`) };
 }
 
 module.exports = {
