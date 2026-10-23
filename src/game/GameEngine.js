@@ -290,6 +290,8 @@ class GameEngine extends EventEmitter {
     // (베팅/레이즈 처리 중에 currentBet 등이 바뀌므로 반드시 처리 전 값을 써야 함). AI의
     // 상대방 성향 추적(폴드 빈도 등)과 레인지 추정에 쓰인다.
     const toCallBefore = legal.callAmount;
+    // 이 액션 직전의 팟 크기(AI가 상대 베팅이 팟 대비 큰지 작은지 판단하는 데 사용)
+    const potBefore = this.potNow();
 
     if (actionType === 'fold') {
       if (!legal.canFold) throw new Error('지금은 폴드할 수 없는 상황입니다 (무료로 체크 가능)');
@@ -345,7 +347,7 @@ class GameEngine extends EventEmitter {
     }
 
     hs.hasActedThisStreet = true;
-    const logEntry = { seatIndex, street: this.street, actionType: record.actionType, amount: record.amount, toCallBefore };
+    const logEntry = { seatIndex, street: this.street, actionType: record.actionType, amount: record.amount, toCallBefore, potBefore };
     this.actionLog.push(logEntry);
     this.emit('action', { ...record, seat: seat.displayName, street: this.street, toCallBefore });
 

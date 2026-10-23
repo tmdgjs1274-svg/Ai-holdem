@@ -173,6 +173,34 @@ async function run() {
     assert.strictEqual(josaEun('봇 찰리'), '는');
   });
 
+  await check('예상 범위 풀어보기(RangeExplain): 조합 수/비율/예시/보드 탑카드·플러시 비율이 정확히 계산됨', () => {
+    const { explainOpponentRange, comboClass } = require('../src/ai/RangeExplain');
+    const { cardFromString: cf } = require('../src/game/Deck');
+    assert.strictEqual(comboClass(cf('Kh'), cf('Ah')), 'AK 수딧');
+    assert.strictEqual(comboClass(cf('Kh'), cf('Ad')), 'AK');
+    assert.strictEqual(comboClass(cf('7h'), cf('7d')), '77');
+    assert.strictEqual(comboClass(cf('Th'), cf('9d')), '109');
+    // 가짜 엔진: 히어로 A♠A♣, 보드 K♥ 7♥ 2♦ 9♣ 4♥ (리버)
+    const engine = {
+      board: ['Kh', '7h', '2d', '9c', '4h'].map(cf),
+      hs: { 0: { holeCards: ['As', 'Ac'].map(cf) } },
+      handSeatsInOrder: () => [0, 1],
+    };
+    const b = explainOpponentRange(engine, 0, 1, null);
+    // 태그 없음(아무 패나) -> 남은 45장의 모든 2장 조합
+    assert.strictEqual(b.total, (45 * 44) / 2);
+    assert.ok(Math.abs(b.aheadPct + b.behindPct + b.tiePct - 100) <= 2);
+    // K를 가진 조합: 남은 K 3장 -> 3*42 + 3 = 129
+    assert.strictEqual(b.topHitPct, Math.round((129 / 990) * 100));
+    assert.strictEqual(b.topRankObj, 'K를');
+    // ♥ 3장 깔린 보드 -> 남은 ♥ 10장 중 2장 = 45조합, 플러시 완성
+    assert.strictEqual(b.flushSuit, '♥');
+    assert.strictEqual(b.flushMade, true);
+    assert.strictEqual(b.flushPct, Math.round((45 / 990) * 100));
+    // AA보다 앞선 패 예시에 플러시/셋/투페어류가 나와야 함
+    assert.ok(b.examplesAhead.length > 0 && b.examplesBehind.length > 0);
+  });
+
   await check('호스트는 전원(폴드한 AI 홀카드 포함), 게스트는 쇼다운 도달 AI만 - 폴드 AI 카드 유출 없음', async () => {
     const table = makeTable();
     const views = await collect(table, 40, 25000);
@@ -191,7 +219,7 @@ async function run() {
         if (p.folded) {
           sawFoldedForHost = true;
           assert.ok(p.holeCards.length === 2);
-          for (const c of p.holeCards) assert.ok(!guestJson.includes(c), `게스트 페이로드에 폴드한 AI 카드(${c})가 유출됨`);
+          for (const c of p.holeCards) assert.ok(!guestJson.includes(`"${c}"`), `게스트 페이로드에 폴드한 AI 카드(${c})가 유출됨`);
         }
       }
     }

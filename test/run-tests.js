@@ -17,6 +17,8 @@ async function main() {
   require('./rangeModel.test').run();
   console.log('\n== OpponentModel ==');
   require('./opponentModel.test').run();
+  console.log('\n== LineReader(상대 베팅 흐름 읽기) ==');
+  require('./lineReader.test').run();
   console.log('\n== AI 고급 전략(레인지/텍스처/익스플로잇/멀티스트리트) ==');
   require('./aiAdvanced.test').run();
   console.log('\n== TableManager ==');

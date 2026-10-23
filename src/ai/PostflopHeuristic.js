@@ -4,6 +4,7 @@ const { estimateEquity } = require('./Equity');
 const { roundRaiseTo, quirkFactor, bigBlunderChance, gtoBluffRatio, minDefenseFrequency } = require('./util');
 const { classifyBoardTexture } = require('./BoardTexture');
 const { buildOpponentRangeFilters } = require('./RangeModel');
+const { buildWeightedRange, lineText } = require('./LineReader');
 const { evaluateBest } = require('../game/HandEvaluator');
 const { handNamePlain, boardPlain, fmtChips, rangeTagText, describeTendency, describeHandActions, josaEun } = require('./Explain');
 
@@ -190,10 +191,33 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
   const rangeTrace = []; // AI 액션 리뷰용 기록(판단에는 영향 없음): 상대별로 실제 레인지를 좁혔는지
   const opponentFilters = buildOpponentRangeFilters(engine, opponentSeats, rangeWeight, rng, rangeTrace);
 
+  // 상대 베팅 흐름 읽기(LineReader): 실력 게이트를 통과해 "분석하기로 한" 상대는, 프리플랍 행동뿐 아니라
+  // 플랍·턴·리버에서 한 행동(체크/콜/작은 베팅/큰 베팅/레이즈)까지 반영해 상대 패를 다시 저울질한
+  // 가중 범위로 이길 확률을 계산한다. 평소 공격적인 상대는 베팅·레이즈에 허세가 더 섞여 있다고 본다
+  // (상대 성향 반영 정도도 실력 가중치를 따름).
+  const bluffAdjFor = (i) => {
+    const agg = opts.opponentModel && advancedWeight > 0 ? opts.opponentModel.aggressionRate(i) : null;
+    if (agg == null) return 1;
+    return clamp(1 + (agg - 0.5) * 1.2 * advancedWeight, 0.5, 1.7);
+  };
+  const deadCards = [...hs.holeCards, ...engine.board];
+  const opponentRanges = rangeWeight > 0
+    ? opponentSeats.map((i) => {
+        const tr = rangeTrace.find((t) => t.seatIndex === i);
+        if (!tr || !tr.considered) return null;
+        const bluffAdj = bluffAdjFor(i);
+        const range = buildWeightedRange(engine, i, deadCards, { tag: tr.applied ? tr.tag : null, bluffAdj });
+        tr.bluffAdj = bluffAdj;
+        tr.shares = range.shares;
+        tr.line = range.line;
+        return range.total > 0 ? range : null;
+      })
+    : null;
+
   // skillLevel이 높을수록 몬테카를로 반복 횟수를 늘려 이퀴티 추정의 통계적 잡음을 줄인다.
   const baseIterations = Math.round(120 + (skill / 100) * 480); // 120~600
   const iterations = Math.max(70, baseIterations - numOpponents * 20);
-  const rawEquity = estimateEquity(hs.holeCards, engine.board, numOpponents, rng, iterations, opponentFilters);
+  const rawEquity = estimateEquity(hs.holeCards, engine.board, numOpponents, rng, iterations, opponentFilters, opponentRanges);
 
   let noise = 0;
   // 드물게 섞이는 큰 실수(이퀴티 오판) - 실력 100%면 0
@@ -250,8 +274,20 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     const opponentReads = opponentSeats.map((i) => {
       const tr = rangeTrace.find((t) => t.seatIndex === i);
       const rt = tr && tr.applied ? rangeTagText(tr.tag) : null;
+      const considered = !!(tr && tr.considered);
+      const lt = considered && tr.line && tr.line.length ? lineText(tr.line) : null;
       const items = [];
-      items.push(rt ? `예상 패: ${rt.full}` : '예상 패: 특별한 단서를 쓰지 않고, 아무 패나 가질 수 있다고 보고 계산했어요');
+      let expect = rt
+        ? `예상 패: ${rt.full}`
+        : considered
+          ? '예상 패: 프리플랍 단서가 없어 넓게 잡았어요'
+          : '예상 패: 특별한 단서를 쓰지 않고, 아무 패나 가질 수 있다고 보고 계산했어요';
+      if (lt) expect += `. 이후 베팅 흐름(${lt})까지 반영해 다시 저울질했어요`;
+      items.push(expect);
+      if (considered && tr.shares) {
+        const sp = (v) => `${Math.round(v * 100)}%`;
+        items.push(`지금 상대 패 구성 추정: 강한 패 ${sp(tr.shares.strong)} · 애매한 패 ${sp(tr.shares.medium)} · 드로우 ${sp(tr.shares.draw)} · 아무것도 없는 패(허세 가능) ${sp(tr.shares.weak)}`);
+      }
       const acts = describeHandActions(engine.actionLog, i);
       if (acts) items.push(`이번 핸드 행동: ${acts}`);
       items.push(
@@ -259,7 +295,7 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
           ? `평소 성향: ${describeTendency(opts.opponentModel.summary(i))}`
           : '평소 성향: 이 AI는 실력 설정상 상대의 평소 성향을 참고하지 않아요'
       );
-      return { seatIndex: i, name: nameOf(i), items, tag: rt ? tr.tag : null };
+      return { seatIndex: i, name: nameOf(i), items, tag: rt ? tr.tag : null, considered, bluffAdj: (tr && tr.bluffAdj) || 1, lineText: lt };
     });
     // 어떤 판단에 어떤 "상대 성향 보정"이 쓰였는지 종류별로 쉬운 말로 만든다(해당 종류의 판단에만 보여준다).
     const effectText = { bluff: null, value: null, call: null };
@@ -280,10 +316,16 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     const reads = { headline: readsHeadline, opponents: opponentReads, effects, notes: readsNotes };
     // "상대 읽기" 핵심 한 줄: 프리플랍 행동으로 상대 패를 어떻게 가정했는지(readsRange)
     const rangeParts = opponentReads
-      .filter((o) => o.tag)
-      .map((o) => `${o.name}${josaEun(o.name)} ${rangeTagText(o.tag).short}`);
+      .filter((o) => o.tag || o.lineText)
+      .map((o) => {
+        const who = `${o.name}${josaEun(o.name)}`;
+        if (o.tag && o.lineText) return `${who} 프리플랍 행동으로 보아 ${rangeTagText(o.tag).short}로 봤고, 이후 '${o.lineText}' 순서로 플레이했어요.`;
+        if (o.tag) return `${who} 프리플랍 행동으로 보아 ${rangeTagText(o.tag).short}로 봤어요.`;
+        return `${who} 이후 '${o.lineText}' 순서로 플레이했어요.`;
+      });
+    const anyLine = opponentReads.some((o) => o.lineText);
     const readsRange = rangeParts.length
-      ? `상대의 프리플랍 행동을 보고 ${rangeParts.join(', ')}일 거라고 가정해서 이길 확률을 계산했어요.`
+      ? `${rangeParts.join(' ')} ${anyLine ? '이 흐름에 맞게 상대 패를 다시 저울질해서' : '이 범위로'} 이길 확률을 계산했어요.`
       : null;
     return { reads, readsRange, effectText };
   } catch (err) {
@@ -309,7 +351,7 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     // 계획했었다면, 이번 판단의 순간적인 이퀴티 판독과 무관하게 계획대로 베팅을 이어간다
     // (실제로 계속 밀어붙이지 않으면 애초에 계획을 세운 의미가 없다).
     if (plan && plan.type === 'delayedBluff' && legal.canRaise && rng() < 0.8) {
-      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk('지난 라운드에 체크하면서 "다음 라운드에 센 척(허세)으로 베팅하자"고 미리 계획해 둔 대로, 이번에 베팅했어요.', '지난 스트리트에 세운 "지연 블러프" 계획대로 베팅 이어감', false, 'bluff') };
+      return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk('쇼다운 밸류가 부족한 패라, 지난 라운드에 체크하면서 "다음 라운드에 센 척(허세)으로 베팅하자"고 미리 계획해 둔 대로 이번에 베팅했어요.', '지난 스트리트에 세운 "지연 블러프" 계획대로 베팅 이어감', false, 'bluff') };
     }
 
     let checkNote = '베팅할 만큼의 이점이 없어 체크';
@@ -339,7 +381,7 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
         return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.45 + rng() * 0.15, texture, textureWeight)), ...mk('상대보다 조금 앞서 있다고 보고, 약한 패를 내보내고 공짜 카드를 주지 않으려고 적당한 크기로 베팅했어요.', `중간 강도 얇은 밸류/프로텍션 벳(이퀴티 45~68%, 베팅 확률 ${pct(0.4 * onePairDamp)})`, true, 'value') };
       }
       checkNote = `중간 강도 - 팟 컨트롤/쇼다운 밸류 유지를 위해 체크(베팅 확률 ${pct(0.4 * onePairDamp)}${onePairDamp < 1 ? ', 세컨페어 감쇠 반영' : ''})`;
-      checkPlain = '조금 앞서 있긴 하지만 확실하진 않아서, 판돈을 키우지 않고 체크했어요. 끝까지 가서 패를 비교해도 이길 수 있는 정도예요.';
+      checkPlain = '끝까지 가서 패를 비교하면 이길 수 있는 정도의 패(쇼다운 밸류가 있음)라서, 굳이 판돈을 키우지 않고 체크했어요. 여기서 베팅하면 더 좋은 패만 따라오고 약한 패는 접어버리기 쉬워요.';
     } else {
       // 순수 블러프(체크로 넘어왔는데 에퀴티가 낮은데도 베팅) 빈도. 예전에는 0.28을 기준으로
       // 써서 헤즈업 기준 최대 14%, 상대가 적을수록 더 자주 블러프를 걸었는데, 사용자 피드백
@@ -354,10 +396,12 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
       const blendedBaseFreq = baseBluffFreq + (gtoFreq - baseBluffFreq) * advancedWeight;
       const bluffFreq = textureBluffAdjust(blendedBaseFreq, texture, textureWeight) * exploit.bluffMult;
       if (legal.canRaise && rng() < bluffFreq) {
-        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk(`내 패는 약하지만, 상대가 겁먹고 접도록 일부러 센 척(허세) 베팅했어요. 가끔 이렇게 섞어야 상대가 내 베팅만 보고 패를 맞히기 어려워요.${texture.wetness < 0.3 ? ' 보드가 안정적이라 허세가 잘 통하는 편이에요.' : ''}`, `블러프 벳(이퀴티 낮음, 블러프 빈도 ${pct(bluffFreq)}: ${advancedWeight > 0.5 ? 'GTO 폴라라이즈 비율 반영' : '기본 휴리스틱'}${exploit.bluffMult !== 1 ? `, 상대 성향 보정 ×${exploit.bluffMult.toFixed(2)}` : ''})`, false, 'bluff') };
+        return { actionType: 'raise', amount: sizeBet(engine, legal, textureSizeAdjust(0.55 + rng() * 0.2, texture, textureWeight)), ...mk(`끝까지 가서 비교하면 이기기 어려운 패(쇼다운 밸류 부족)라서, 체크로 포기하는 대신 상대가 접도록 일부러 센 척(허세) 베팅으로 돌렸어요. 가끔 이렇게 섞어야 상대가 내 베팅만 보고 패를 맞히기 어려워요.${texture.wetness < 0.3 ? ' 보드가 안정적이라 허세가 잘 통하는 편이에요.' : ''}`, `블러프 벳(이퀴티 낮음, 블러프 빈도 ${pct(bluffFreq)}: ${advancedWeight > 0.5 ? 'GTO 폴라라이즈 비율 반영' : '기본 휴리스틱'}${exploit.bluffMult !== 1 ? `, 상대 성향 보정 ×${exploit.bluffMult.toFixed(2)}` : ''})`, false, 'bluff') };
       }
       checkNote = `이퀴티가 낮아 체크(블러프 빈도 ${pct(bluffFreq)} 미당첨)`;
-      checkPlain = '이길 확률이 낮아서 허세도 부리지 않고 그냥 체크했어요. 돈을 더 쓰지 않고 다음 카드를 보려는 거예요.';
+      checkPlain = engine.street === 'river'
+        ? '끝까지 가서 비교하면 이기기 어려운 패(쇼다운 밸류 부족)지만, 이번에는 허세도 쓰지 않고 체크했어요. 돈을 더 쓰지 않고 그대로 패를 비교하려는 거예요.'
+        : '끝까지 가서 비교하면 이기기 어려운 패(쇼다운 밸류 부족)지만, 이번에는 허세도 쓰지 않고 체크했어요. 돈을 더 쓰지 않고 다음 카드를 보려는 거예요.';
       // 지금 당장은 블러프를 안 걸기로 했더라도, 다음 스트리트에 이어서 블러프를 걸어보는
       // "지연 블러프"(체크 후 턴에 블러프 이어가기) 계획을 대신 세울 수 있다.
       if (planWeight > 0 && NEXT_STREET[engine.street] && rng() < bluffFreq * 1.5 * planWeight) {
@@ -416,7 +460,7 @@ function decidePostflop(engine, seatIndex, legal, opts = {}) {
     }
   }
   if (equity > 0.3 && equity < 0.5 && legal.canRaise && rng() < 0.08 * quirk) {
-    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6), ...mk('이길 확률은 낮지만, 가끔은 일부러 레이즈로 센 척해서 상대가 접도록 만들어요(허세 섞기).', '세미블러프 레이즈(낮은 확률 믹스, 실력 높을수록 줄어듦)', false, 'bluff') }; // 세미블러프(실력 100%면 0)
+    return { actionType: 'raise', amount: sizeBet(engine, legal, 0.6), ...mk('지금은 이길 확률이 낮지만(쇼다운 밸류 부족) 다음 카드로 좋아질 여지가 있어, 가끔은 일부러 레이즈로 센 척해서 상대가 접도록 만들어요(허세 섞기).', '세미블러프 레이즈(낮은 확률 믹스, 실력 높을수록 줄어듦)', false, 'bluff') }; // 세미블러프(실력 100%면 0)
   }
   return legal.canCheck
     ? { actionType: 'check', ...mk('따라가야 할 돈이 없어서 공짜로 넘어갔어요(체크).', '무료로 체크', false, false) }

@@ -426,3 +426,11 @@ input.raise-amount-input {
 .ai-rv-reads-opp { margin: 4px 0; padding: 4px 6px; background: rgba(0,0,0,0.22); border-radius: 4px; line-height: 1.45; color: #cfe0d6; }
 .ai-rv-reads-opp b { color: #e2b93b; display: block; }
 .ai-rv-reads-note { margin-top: 4px; color: #9fb7aa; }
+
+/* 연결 끊김 배너 (재연결 중) */
+.conn-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+  background: #b5482f; color: #fff; text-align: center; font-size: 13px; font-weight: 700;
+  padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}

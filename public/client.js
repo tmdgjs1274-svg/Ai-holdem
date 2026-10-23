@@ -2,14 +2,48 @@
 
 // reconnectionDelayMax를 짧게 잡아서, 잠깐 백그라운드에 있다가 돌아왔을 때 재연결 시도
 // 간격이 너무 길어지지 않게 한다(기본값 5초면 충분히 짧지만 명시적으로 고정해둔다).
-const socket = io({ reconnection: true, reconnectionDelay: 500, reconnectionDelayMax: 3000 });
+// transports: 웹소켓을 먼저 쓴다. 기본값(HTTP 롱폴링으로 시작)은 휴대폰이 앱 전환 중에 버린
+// "죽은 HTTP 연결"을 브라우저가 재사용하면서 재연결 요청 자체가 멈춰버리는 문제가 있었다
+// (재현 테스트에서 2분 넘게 복구 안 됨). 웹소켓이 막힌 환경에서는 tryAllTransports로 롱폴링으로 넘어간다.
+// timeout: 연결 시도 하나가 응답 없이 너무 오래 매달리지 않도록 8초로 줄인다(기본 20초).
+const socket = io({
+  reconnection: true,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 3000,
+  timeout: 8000,
+  transports: ['websocket', 'polling'],
+  tryAllTransports: true,
+});
 
 // 모바일 브라우저는 화면을 끄거나 다른 앱으로 전환하면(카톡 확인, 전화 수신 등) 탭을
 // 백그라운드로 보내면서 소켓 연결이 끊길 수 있다. socket.io는 보통 알아서 재연결을
 // 시도하지만, 탭이 완전히 절전 상태였다가 돌아오는 경우 그 재시도 타이머 자체가 늦게
 // 깨어날 수 있으므로, 화면이 다시 보이는 순간 곧바로 재연결을 시도해 체감 지연을 줄인다.
+//
+// 그런데 휴대폰이 앱 전환 중에 연결을 "조용히" 버리면(통신망/OS가 끊김 신호 없이 데이터만 버림),
+// 브라우저는 연결이 살아있다고 착각해(socket.connected === true) 아무것도 하지 않은 채, 핑 시간
+// 초과(약 85초)가 지나서야 끊김을 알아챈다 - 사용자 입장에서는 "돌아왔더니 화면이 멈춰 있음".
+// 그래서 화면이 다시 보이는 순간 서버에 짧은 확인 요청(healthCheck)을 보내, 2.5초 안에 답이
+// 없으면 죽은 연결로 보고 즉시 끊고 새로 연결한다(새 연결이 되면 아래 'connect'에서 자동 재입장).
+let healthCheckInFlight = false;
+function forceReconnect() {
+  socket.disconnect();
+  socket.connect();
+}
+function checkConnectionHealth() {
+  if (!socket.connected) {
+    socket.connect();
+    return;
+  }
+  if (healthCheckInFlight) return;
+  healthCheckInFlight = true;
+  socket.timeout(2500).emit('healthCheck', {}, (err) => {
+    healthCheckInFlight = false;
+    if (err) forceReconnect();
+  });
+}
 function ensureSocketConnected() {
-  if (!socket.connected) socket.connect();
+  checkConnectionHealth();
 }
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
@@ -19,7 +53,30 @@ if (typeof document !== 'undefined') {
   // visibilitychange만으로는 놓칠 수 있어 pageshow도 함께 잡아준다.
   window.addEventListener('pageshow', ensureSocketConnected);
   window.addEventListener('focus', ensureSocketConnected);
+  window.addEventListener('online', ensureSocketConnected);
+  // 화면을 보고 있는 동안에도(예: 와이파이↔LTE 전환) 15초마다 가볍게 확인한다.
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && myRoomId) checkConnectionHealth();
+  }, 15000);
 }
+
+// 연결 상태 표시: 끊기면 상단에 "다시 연결하는 중" 배너, 복구되면 배너를 내리고 짧게 알린다.
+let connBannerShownAt = 0;
+function showConnBanner() {
+  const b = document.getElementById('conn-banner');
+  if (!b || !myRoomId) return;
+  if (b.classList.contains('hidden')) connBannerShownAt = Date.now();
+  b.classList.remove('hidden');
+}
+function hideConnBanner(announce) {
+  const b = document.getElementById('conn-banner');
+  if (!b) return;
+  const wasShown = !b.classList.contains('hidden');
+  b.classList.add('hidden');
+  if (announce && wasShown && typeof toast === 'function') toast('다시 연결됐어요');
+}
+socket.on('disconnect', () => showConnBanner());
+socket.on('connect_error', () => showConnBanner());
 
 const el = (id) => document.getElementById(id);
 // 칩/금액 표시는 항상 천 단위 콤마를 넣어 보여준다 (입력 칸은 그대로 숫자만 받음)
@@ -635,8 +692,10 @@ el('btn-addon').addEventListener('click', () => {
 
 // ---------- 소켓 연결/재연결 ----------
 socket.on('connect', () => {
+  if (!(myRoomId && myPlayerId)) hideConnBanner(false);
   if (myRoomId && myPlayerId) {
     socket.emit('rejoinRoom', { roomId: myRoomId, playerId: myPlayerId }, (res) => {
+      hideConnBanner(res.ok);
       if (res.ok) {
         latestLobby = res.lobby;
         if (res.lobby.status === 'lobby') {
@@ -1278,13 +1337,13 @@ function renderAiReview(review) {
       // 상대 분석: AI가 상대 패를 어떻게 가정했는지(같은 가정이 이어지면 반복하지 않음) + 이번 판단에 쓰인 상대 성향 보정
       const prevRange = prevRangeText;
       prevRangeText = a.readsRange || null;
-      if ((a.readsRange && a.readsRange !== prevRange) || a.readsEffect) {
+      if ((a.readsRange && a.readsRange !== prevRange) || a.readsEffect || a.readsHand) {
         const rd = document.createElement('div');
         rd.className = 'ai-rv-read';
         const tag = document.createElement('b');
         tag.textContent = '상대 분석 ';
         rd.appendChild(tag);
-        rd.appendChild(document.createTextNode([a.readsRange !== prevRange ? a.readsRange : null, a.readsEffect].filter(Boolean).join(' ')));
+        rd.appendChild(document.createTextNode([a.readsRange !== prevRange ? a.readsRange : null, a.readsHand, a.readsEffect].filter(Boolean).join(' ')));
         whyBox.appendChild(rd);
       }
       if (a.reads) {
@@ -1566,6 +1625,13 @@ document.addEventListener('click', (e) => {
 });
 
 function sendAction(actionType, amount) {
+  // 연결이 끊긴 동안 누른 액션은 보내지 않는다. 그대로 두면 소켓이 버퍼에 쌓아뒀다가 재연결 직후
+  // (재입장보다 먼저) 보내서 "방에 참가하지 않은 상태" 오류가 나거나, 이미 지난 상황의 액션이 될 수 있다.
+  if (!socket.connected) {
+    toast('연결을 다시 잡는 중이에요. 잠시 후 다시 눌러주세요');
+    checkConnectionHealth();
+    return;
+  }
   socket.emit('action', { actionType, amount }, (res) => {
     if (!res.ok) toast(res.error || '액션 실패');
   });

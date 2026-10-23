@@ -17,6 +17,13 @@ const server = http.createServer(app);
 const io = new Server(server, {
   pingInterval: 25000,
   pingTimeout: 60000,
+  // 잠깐 끊겼다가(최대 2분) 다시 연결되면, 끊긴 사이 놓친 이벤트(상대 액션/보드 공개/핸드 결과 등)를
+  // socket.io가 자동으로 다시 보내준다. 그 위에 클라이언트가 재입장(rejoinRoom)하면서 최신 상태를 한 번
+  // 더 받으므로, 복귀 직후 화면이 중간 상태로 남는 일이 없다.
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true,
+  },
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -100,6 +107,15 @@ function attachTableEvents(table) {
     io.to(table.roomId).emit('roomClosed', payload);
     rooms.delete(table.roomId);
   });
+}
+
+// 같은 방, 같은 플레이어로 등록된 "다른" 살아있는 소켓이 있는지
+function hasOtherLiveSocket(roomId, playerId, exceptSocketId) {
+  for (const [sid, m] of socketMeta) {
+    if (sid === exceptSocketId) continue;
+    if (m.roomId === roomId && m.playerId === playerId && io.sockets.sockets.has(sid)) return true;
+  }
+  return false;
 }
 
 function findSocketByPlayer(roomId, playerId) {
@@ -250,10 +266,20 @@ io.on('connection', (socket) => {
     });
   });
 
+  // 클라이언트가 화면 복귀 시 "연결이 진짜 살아있는지" 확인하는 용도(응답만 하면 됨)
+  socket.on('healthCheck', (_, cb) => {
+    if (typeof cb === 'function') cb({ ok: true });
+  });
+
   socket.on('disconnect', () => {
     const meta = socketMeta.get(socket.id);
     socketMeta.delete(socket.id);
     if (!meta) return;
+    // 같은 사람이 이미 "새 연결"로 다시 들어와 있다면, 뒤늦게 정리되는 옛 연결의 끊김은 무시한다.
+    // (휴대폰이 앱 전환 중 버린 옛 연결은 서버가 한참 뒤(핑 시간 초과, 최대 약 85초)에야 끊김으로
+    //  처리하는데, 그 사이 클라이언트는 이미 새로 연결해 재입장했을 수 있다. 이걸 그대로 반영하면
+    //  멀쩡히 접속 중인 사람을 "끊김"으로 표시해 자동 체크/폴드나 자리 정리가 일어날 수 있다.)
+    if (hasOtherLiveSocket(meta.roomId, meta.playerId, socket.id)) return;
     const table = rooms.get(meta.roomId);
     if (table) table.disconnect(meta.playerId);
   });
@@ -287,4 +313,4 @@ server.listen(PORT, () => {
   console.log(`홀덤 AI 서버 실행 중: http://localhost:${PORT}`);
 });
 
-module.exports = { app, server, io };
+module.exports = { app, server, io, rooms };

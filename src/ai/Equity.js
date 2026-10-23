@@ -1,6 +1,6 @@
 'use strict';
 
-const { makeDeck } = require('../game/Deck');
+const { makeDeck, cardToString } = require('../game/Deck');
 const { evaluateBest, compareScore } = require('../game/HandEvaluator');
 
 function cardKey(c) {
@@ -76,7 +76,38 @@ function drawOpponentHand(localPool, filter, rng) {
  * @param {Array<null|function>} [opponentFilters] numOpponents 길이의 레인지 필터 배열
  * @returns {number} 0~1 사이 추정 이퀴티
  */
-function estimateEquity(heroCards, board, numOpponents, rng = Math.random, iterations = 150, opponentFilters = null) {
+// 가중 범위(LineReader.buildWeightedRange 결과)에서 조합 하나를 뽑는다. 이미 쓰인 카드(used)와
+// 겹치면 몇 번 다시 뽑고, 그래도 안 되면 null(호출부가 무작위로 대체).
+// (LineReader가 이 파일의 chenScore를 쓰므로, 순환 참조를 피하려고 샘플링은 여기 직접 둔다.)
+function sampleWeighted(range, rng, used, maxTries = 12) {
+  if (!range || !range.combos || !range.combos.length || !(range.total > 0)) return null;
+  for (let t = 0; t < maxTries; t++) {
+    const r = rng() * range.total;
+    let lo = 0;
+    let hi = range.cum.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (range.cum[mid] < r) lo = mid + 1;
+      else hi = mid;
+    }
+    const pick = range.combos[lo];
+    if (!used.has(cardToString(pick.c1)) && !used.has(cardToString(pick.c2))) return [pick.c1, pick.c2];
+  }
+  return null;
+}
+
+function removeFromPool(localPool, cards) {
+  for (const c of cards) {
+    const idx = localPool.findIndex((p) => p.rank === c.rank && p.suit === c.suit);
+    if (idx >= 0) localPool.splice(idx, 1);
+  }
+}
+
+/**
+ * opponentRanges(선택): 상대별 가중 범위 배열(항목 null 가능). 있으면 그 상대는 필터 대신 이
+ * 가중치대로 패를 뽑는다(상대의 프리플랍 행동 + 플랍 이후 베팅 흐름을 반영한 범위).
+ */
+function estimateEquity(heroCards, board, numOpponents, rng = Math.random, iterations = 150, opponentFilters = null, opponentRanges = null) {
   if (numOpponents <= 0) return 1;
   const known = [...heroCards, ...board];
   const pool = remainingDeck(known);
@@ -93,9 +124,17 @@ function estimateEquity(heroCards, board, numOpponents, rng = Math.random, itera
     const heroScore = evaluateBest([...heroCards, ...fullBoard]);
 
     let bestOppScore = null;
+    const used = opponentRanges ? new Set([...known, ...extraBoard].map(cardToString)) : null;
     for (let o = 0; o < numOpponents; o++) {
       const filter = filters ? filters[o] : null;
-      const oppCards = drawOpponentHand(localPool, filter, rng);
+      let oppCards = null;
+      const range = opponentRanges ? opponentRanges[o] : null;
+      if (range) {
+        oppCards = sampleWeighted(range, rng, used);
+        if (oppCards) removeFromPool(localPool, oppCards);
+      }
+      if (!oppCards) oppCards = drawOpponentHand(localPool, filter, rng);
+      if (used) for (const c of oppCards) used.add(cardToString(c));
       if (oppCards.length < 2) continue; // 카드가 모자란 극단적 엣지케이스
       const oppScore = evaluateBest([...oppCards, ...fullBoard]);
       if (!bestOppScore || compareScore(oppScore, bestOppScore) > 0) {

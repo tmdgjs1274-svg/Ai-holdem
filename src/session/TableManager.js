@@ -6,6 +6,9 @@ const { BlindStructure, generateDefaultLevels } = require('../game/BlindStructur
 const { decideAction } = require('../ai/AIDecisionEngine');
 const { OpponentModel } = require('../ai/OpponentModel');
 const { cardToString } = require('../game/Deck');
+const { explainOpponentRange, breakdownLine, keySentence, BoardEvalCache } = require('../ai/RangeExplain');
+const { buildWeightedRange } = require('../ai/LineReader');
+const { josaEun } = require('../ai/Explain');
 
 // 블라인드 구조에 한 번에 넣을 수 있는 레벨 수 상한(휴식 포함). 실수로 수백 개를 넣는 것을 방지.
 const MAX_BLIND_LEVELS = 60;
@@ -512,6 +515,7 @@ class TableManager extends EventEmitter {
     this._awaitingConfirmInfo = null;
     this.engine.startHand();
     this._aiReviewLog = [];
+    this._rangeEvalCache = null; // 리뷰용 보드 평가 캐시는 핸드마다 새로
     this.opponentModel.recordHandStart(this.engine.handSeatsInOrder());
     this._broadcastState();
     this._runAiLoop();
@@ -649,6 +653,7 @@ class TableManager extends EventEmitter {
   _captureReviewContext(seatIndex, decision) {
     if (!this.config.showAiReview) return null;
     const legal = this.engine.getLegalActions(seatIndex);
+    const { reads, readsHand } = this._explainRanges(seatIndex, decision, legal);
     return {
       seatIndex,
       street: this.engine.street,
@@ -660,11 +665,43 @@ class TableManager extends EventEmitter {
       reason: decision.reason || '(이유 정보 없음)',
       situation: decision.situation || null,
       detail: decision.detail || null,
-      reads: decision.reads || null,
+      reads,
+      readsHand,
       readsRange: decision.readsRange || null,
       readsEffect: decision.readsEffect || null,
       equity: decision.meta && decision.meta.equity != null ? Math.round(decision.meta.equity * 1000) / 1000 : null,
     };
+  }
+
+  // AI가 가정한 상대 예상 범위를 실제 조합으로 풀어서(현재 보드 기준 앞선/약한 패 비율과 예시 등)
+  // 리뷰에 덧붙인다. 리뷰 전용 계산이라 실패해도 게임에는 영향이 없도록 try/catch로 감싼다.
+  _explainRanges(seatIndex, decision, legal) {
+    const base = decision.reads || null;
+    if (!base || this.engine.street === 'preflop' || !Array.isArray(base.opponents)) return { reads: base, readsHand: null };
+    try {
+      if (!this._rangeEvalCache) this._rangeEvalCache = new BoardEvalCache();
+      const dead = [...this.engine.hs[seatIndex].holeCards, ...this.engine.board];
+      const opponents = base.opponents.map((o) => {
+        // AI가 이 상대를 "분석하기로" 했다면 판단 때와 같은 가중 범위(프리플랍 + 베팅 흐름)로 풀어 보여준다
+        const weighted = o.considered
+          ? buildWeightedRange(this.engine, o.seatIndex, dead, { tag: o.tag, bluffAdj: o.bluffAdj || 1 })
+          : null;
+        const b = explainOpponentRange(this.engine, seatIndex, o.seatIndex, o.tag, this._rangeEvalCache, weighted);
+        if (weighted) o = { ...o, lineInfo: { considered: true, shares: weighted.shares, lineText: o.lineText } };
+        const line = breakdownLine(b);
+        return { ...o, items: line ? [...o.items, line] : o.items, breakdown: b };
+      });
+      // 핵심 문장은 "지금 나에게 베팅한 상대"(없으면 첫 상대) 기준으로 한 명만
+      const facing = legal && legal.callAmount > 0;
+      const aggr = this.engine.lastAggressorSeat;
+      const main = (facing && opponents.find((o) => o.seatIndex === aggr)) || opponents[0];
+      const readsHand = main && main.breakdown
+        ? keySentence(main.name, josaEun, main.breakdown, facing && main.seatIndex === aggr, main.lineInfo || null)
+        : null;
+      return { reads: { ...base, opponents: opponents.map(({ breakdown, lineInfo, ...rest }) => rest) }, readsHand };
+    } catch (err) {
+      return { reads: base, readsHand: null };
+    }
   }
 
   // 이번 핸드의 AI 리뷰 원본(전원 포함)을 만든다. 호스트에게는 그대로, 게스트에게는
